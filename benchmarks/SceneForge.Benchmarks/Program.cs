@@ -1,4 +1,4 @@
+using System.Reflection;
 using BenchmarkDotNet.Running;
-using SceneForge.Benchmarks;
 
-BenchmarkRunner.Run<ModuleInfoBenchmarks>();
+BenchmarkSwitcher.FromAssembly(Assembly.GetExecutingAssembly()).Run(args);
