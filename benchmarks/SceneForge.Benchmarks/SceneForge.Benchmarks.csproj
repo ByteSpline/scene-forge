@@ -11,6 +11,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\SceneForge.Core\SceneForge.Core.csproj" />
+    <ProjectReference Include="..\..\src\SceneForge.Media\SceneForge.Media.csproj" />
   </ItemGroup>
 
 </Project>
