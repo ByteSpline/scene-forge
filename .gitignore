@@ -25,3 +25,8 @@ artifacts/
 ## OS files
 .DS_Store
 Thumbs.db
+
+## Vendored FFmpeg/FFprobe binaries (never committed; resolved at runtime
+## relative to the app, never via PATH - see SceneForge.Media.Tooling.FfmpegToolLocator)
+tools/
+**/tools/ffmpeg/
