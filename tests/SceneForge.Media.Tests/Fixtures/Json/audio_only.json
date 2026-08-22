@@ -1,0 +1,30 @@
+{
+    "streams": [
+        {
+            "index": 0,
+            "codec_name": "aac",
+            "codec_type": "audio",
+            "sample_rate": "44100",
+            "channels": 1,
+            "channel_layout": "mono",
+            "r_frame_rate": "0/0",
+            "avg_frame_rate": "0/0",
+            "time_base": "1/44100",
+            "duration_ts": 44100,
+            "duration": "1.000000",
+            "bit_rate": "70342",
+            "tags": {
+                "language": "und",
+                "handler_name": "SoundHandler"
+            }
+        }
+    ],
+    "format": {
+        "filename": "sample_audio_only.m4a",
+        "nb_streams": 1,
+        "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+        "duration": "1.000000",
+        "size": "9983",
+        "bit_rate": "79864"
+    }
+}
