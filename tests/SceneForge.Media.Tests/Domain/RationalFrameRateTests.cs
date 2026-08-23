@@ -64,4 +64,80 @@ public class RationalFrameRateTests
     {
         Assert.Equal("undefined", RationalFrameRate.Undefined.ToString());
     }
+
+    [Fact]
+    public void ToFrameCount_IntegerFrameRate_OneSecondIsExactlyFrameRateFrames()
+    {
+        var frameRate = new RationalFrameRate(25, 1);
+
+        Assert.Equal(25, frameRate.ToFrameCount(TimeSpan.FromSeconds(1)));
+        Assert.Equal(0, frameRate.ToFrameCount(TimeSpan.Zero));
+        Assert.Equal(250, frameRate.ToFrameCount(TimeSpan.FromSeconds(10)));
+    }
+
+    [Fact]
+    public void FromFrameCount_IntegerFrameRate_IsExactRoundTrip()
+    {
+        var frameRate = new RationalFrameRate(25, 1);
+
+        Assert.Equal(TimeSpan.FromSeconds(1), frameRate.FromFrameCount(25));
+        Assert.Equal(TimeSpan.Zero, frameRate.FromFrameCount(0));
+    }
+
+    [Fact]
+    public void ToFrameCount_RoundsToNearestFrame()
+    {
+        var frameRate = new RationalFrameRate(30000, 1001);
+
+        // 1 frame at 29.97fps is ~33.3667ms; 40ms rounds up to the 2nd frame boundary.
+        Assert.Equal(1, frameRate.ToFrameCount(TimeSpan.FromMilliseconds(40)));
+
+        // 10ms rounds down to the 0th frame boundary.
+        Assert.Equal(0, frameRate.ToFrameCount(TimeSpan.FromMilliseconds(10)));
+    }
+
+    [Theory]
+    [InlineData(25, 1, 0)]
+    [InlineData(25, 1, 1)]
+    [InlineData(25, 1, 1000)]
+    [InlineData(30000, 1001, 0)]
+    [InlineData(30000, 1001, 12345)]
+    [InlineData(24, 1, 7)]
+    public void FromFrameCount_ThenToFrameCount_RoundTripsToSameFrameCount(long numerator, long denominator, long frameCount)
+    {
+        var frameRate = new RationalFrameRate(numerator, denominator);
+
+        var duration = frameRate.FromFrameCount(frameCount);
+        var roundTripped = frameRate.ToFrameCount(duration);
+
+        Assert.Equal(frameCount, roundTripped);
+    }
+
+    [Fact]
+    public void ToFrameCount_Undefined_Throws()
+    {
+        Assert.Throws<InvalidOperationException>(() => RationalFrameRate.Undefined.ToFrameCount(TimeSpan.FromSeconds(1)));
+    }
+
+    [Fact]
+    public void FromFrameCount_Undefined_Throws()
+    {
+        Assert.Throws<InvalidOperationException>(() => RationalFrameRate.Undefined.FromFrameCount(1));
+    }
+
+    [Fact]
+    public void ToFrameCount_NegativeDuration_Throws()
+    {
+        var frameRate = new RationalFrameRate(25, 1);
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => frameRate.ToFrameCount(TimeSpan.FromSeconds(-1)));
+    }
+
+    [Fact]
+    public void FromFrameCount_NegativeFrameCount_Throws()
+    {
+        var frameRate = new RationalFrameRate(25, 1);
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => frameRate.FromFrameCount(-1));
+    }
 }
