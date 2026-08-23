@@ -248,7 +248,12 @@ internal sealed class SyntheticVideoFixtureBuilder
             {
                 FileName = _ffmpegPath,
                 Arguments = arguments,
-                Timeout = TimeSpan.FromSeconds(30),
+                // Generous relative to these clips' actual encode cost
+                // (~3s of 160x90 libx264 at -preset ultrafast, well under
+                // a second on typical dev hardware) to absorb slower CI/dev
+                // machines without making a one-off slow encode flake the
+                // whole fixture matrix.
+                Timeout = TimeSpan.FromSeconds(60),
             },
             cancellationToken).ConfigureAwait(false);
 

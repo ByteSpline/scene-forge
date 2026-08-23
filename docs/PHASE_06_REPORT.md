@@ -16,6 +16,25 @@ precision/recall/boundary-error per transition type. Explicitly **not** in
 scope: `SceneForge.App` wiring (no UI surface exists yet to run this from),
 and any concurrent/batch orchestration across multiple files.
 
+## Prerequisites
+
+- **Windows** and **.NET 8** (the pinned SDK, `global.json` → `8.0.424`) —
+  the whole solution, this phase included, is a native Windows application
+  per CLAUDE.md rule 1; there is no cross-platform target and none is
+  planned. `OpenCvSharp4.runtime.win`, added this phase, is the correct and
+  only native OpenCvSharp runtime package for that reason — no Linux/macOS
+  runtime package should be added.
+- **Real ffmpeg/ffprobe binaries, local-only, for the fixture matrix
+  test.** `TransitionDetectorFixtureTests` (and every other
+  `[SkippableFact]` real-binary test carried over from Phases 4/5) always
+  skips in CI (`windows-latest`, no ffmpeg installed) and skips locally too
+  unless `ffmpeg.exe`/`ffprobe.exe` (plus their dependent DLLs) are present
+  at `tests/SceneForge.Media.Tests/bin/<Debug|Release>/net8.0/tools/ffmpeg/`
+  — copied there temporarily to run them, then removed; `tools/` is
+  gitignored and this is never committed. See
+  `tests/SceneForge.Media.Tests/TestSupport/RealFfmpegAvailability.cs` for
+  the exact path resolution and skip-reason message.
+
 ## Repository layout produced
 
 ```
@@ -69,8 +88,12 @@ added a repo-wide MSBuild target working around an OpenCvSharp4 analyzer/SDK
 compiler-version mismatch, see below), `src/SceneForge.Media/SceneForge.Media.csproj`,
 `tests/SceneForge.Media.Tests/SceneForge.Media.Tests.csproj`,
 `benchmarks/SceneForge.Benchmarks/SceneForge.Benchmarks.csproj` (all three:
-added the two OpenCvSharp4 package references). No other existing file
-changed; `SceneForge.App`/`SceneForge.Infrastructure` untouched.
+added the two OpenCvSharp4 package references). Following a code-review
+pass on the PR (see "Code-review follow-ups" below), `src/SceneForge.Media/Sampling/IFrameSampler.cs`
+and `FrameSampler.cs` also gained a `MediaInfo`-accepting `SampleAsync`
+overload (`tests/.../TestSupport/FakeFrameSampler.cs` updated to match). No
+other existing file changed; `SceneForge.App`/`SceneForge.Infrastructure`
+untouched.
 
 ## Design summary
 
@@ -514,6 +537,42 @@ present.
   ffmpeg pipeline verified end-to-end with measured (not assumed) metrics,
   benchmark recorded, `SceneForge.App` wiring explicitly out of scope — are
   met as of this report.
+
+## Code-review follow-ups
+
+A GitHub Copilot review of the PR raised several points; most were
+cross-platform/CI suggestions that do not apply (this project is
+Windows-only by design — CLAUDE.md rule 1, `docs/ARCHITECTURE_DECISIONS.md`
+Decision 1, CI runs on `windows-latest` only — so `OpenCvSharp4.runtime.win`
+is the correct and only native runtime package; no Linux/macOS runtime
+package or multi-OS CI was added). Three points were genuinely applicable
+and addressed:
+
+- **Duplicate ffprobe call.** `TransitionDetector.DetectAsync` probed the
+  file itself (to fail fast on no video stream and to get `Duration` for
+  `TransitionFuser`'s buffer clamping) and then called
+  `IFrameSampler.SampleAsync`, which probed the same file again internally
+  - two ffprobe process launches per `DetectAsync` call. Fixed by adding a
+  `MediaInfo`-accepting `SampleAsync` overload to `IFrameSampler`/
+  `FrameSampler` (both public methods now delegate to a shared private
+  `SampleCoreAsync`, so the existing 4-argument overload's behavior is
+  unchanged); `TransitionDetector` now passes its already-resolved
+  `mediaInfo` through, so the file is probed exactly once per call.
+- **Fixture-generation timeout.** `SyntheticVideoFixtureBuilder`'s ffmpeg
+  invocation used a 30s timeout for what is normally a sub-second encode
+  (~3s of 160x90 `libx264` at `-preset ultrafast`); raised to 60s so a
+  slower CI/dev machine can't turn ordinary variance into a flaky failure.
+- **Missing Prerequisites documentation.** Added the section above,
+  stating the Windows/.NET 8 requirement and the local-only real-ffmpeg
+  setup for the fixture matrix test explicitly, rather than leaving it
+  only implicit in `RealFfmpegAvailability.cs` and scattered report prose.
+
+Verified after these changes: `dotnet format --verify-no-changes` clean;
+`dotnet build` Debug and Release both 0 warnings/0 errors; `dotnet test`
+Debug and Release both pass with the same 237 passed / 7 skipped shape as
+before (real ffmpeg absent) — the `IFrameSampler` overload addition did not
+change any existing test's behavior, since the original 4-argument
+signature and its behavior are untouched.
 
 ## Outstanding for later phases
 

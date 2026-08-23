@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using SceneForge.Media.Domain;
 using SceneForge.Media.Sampling;
 
 namespace SceneForge.Media.Tests.TestSupport;
@@ -17,6 +18,16 @@ internal sealed class FakeFrameSampler : IFrameSampler
 
     public IAsyncEnumerable<FrameSample> SampleAsync(
         string filePath,
+        FrameSamplingOptions options,
+        IProgress<FrameSamplingProgress>? progress,
+        CancellationToken cancellationToken) => _handler(filePath, options, cancellationToken);
+
+    // mediaInfo is ignored here - fakes drive behavior purely off the
+    // handler delegate; tests that care about MediaInfo do so via
+    // FakeFfprobeService instead.
+    public IAsyncEnumerable<FrameSample> SampleAsync(
+        string filePath,
+        MediaInfo mediaInfo,
         FrameSamplingOptions options,
         IProgress<FrameSamplingProgress>? progress,
         CancellationToken cancellationToken) => _handler(filePath, options, cancellationToken);

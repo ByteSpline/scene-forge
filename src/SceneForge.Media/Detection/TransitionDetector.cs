@@ -10,11 +10,12 @@ namespace SceneForge.Media.Detection;
 // Orchestrates the whole transition-analysis pipeline:
 // IFrameSampler -> SignalPipeline -> ClassifierWindow + all 7
 // ITransitionClassifiers -> TransitionFuser. Probes the file once up front
-// (fail-fast on no video stream, same pattern as FrameSampler itself) purely
-// to pass the source duration through to TransitionFuser for End clamping -
-// this does mean ffprobe runs twice (once here, once again inside
-// IFrameSampler.SampleAsync), a small, deliberate redundancy traded for
-// keeping this class decoupled from IFrameSampler's internals.
+// (fail-fast on no video stream, same pattern as FrameSampler itself) both
+// to pass the source duration through to TransitionFuser for End clamping
+// and to hand the already-resolved MediaInfo to IFrameSampler's
+// MediaInfo-accepting SampleAsync overload, so the file is probed exactly
+// once per DetectAsync call rather than once here and again inside
+// FrameSampler.
 public sealed class TransitionDetector : ITransitionDetector
 {
     private static readonly IReadOnlyList<ITransitionClassifier> Classifiers =
@@ -64,7 +65,7 @@ public sealed class TransitionDetector : ITransitionDetector
         var stopwatch = Stopwatch.StartNew();
         var framesAnalyzed = 0;
 
-        var frames = _frameSampler.SampleAsync(filePath, samplingOptions, progress: null, cancellationToken);
+        var frames = _frameSampler.SampleAsync(filePath, mediaInfo, samplingOptions, progress: null, cancellationToken);
         await foreach (var signal in signalPipeline.ComputeAsync(frames, cancellationToken).ConfigureAwait(false))
         {
             framesAnalyzed++;
