@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
+using SceneForge.Media.Domain;
 using SceneForge.Media.Probing;
 using SceneForge.Media.Tooling;
 using SceneForge.Media.Validation;
@@ -40,17 +41,36 @@ public sealed class FrameSampler : IFrameSampler
         _processLauncher = processLauncher;
     }
 
-    public async IAsyncEnumerable<FrameSample> SampleAsync(
+    public IAsyncEnumerable<FrameSample> SampleAsync(
         string filePath,
         FrameSamplingOptions options,
         IProgress<FrameSamplingProgress>? progress,
-        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        SampleCoreAsync(filePath, mediaInfo: null, options, progress, cancellationToken);
+
+    public IAsyncEnumerable<FrameSample> SampleAsync(
+        string filePath,
+        MediaInfo mediaInfo,
+        FrameSamplingOptions options,
+        IProgress<FrameSamplingProgress>? progress,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(mediaInfo);
+        return SampleCoreAsync(filePath, mediaInfo, options, progress, cancellationToken);
+    }
+
+    private async IAsyncEnumerable<FrameSample> SampleCoreAsync(
+        string filePath,
+        MediaInfo? mediaInfo,
+        FrameSamplingOptions options,
+        IProgress<FrameSamplingProgress>? progress,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(options);
 
         var validatedPath = MediaPathValidator.ValidateInputFile(filePath);
-        var mediaInfo = await _ffprobeService.ProbeAsync(validatedPath, cancellationToken).ConfigureAwait(false);
-        var videoStream = mediaInfo.PrimaryVideoStream
+        var info = mediaInfo ?? await _ffprobeService.ProbeAsync(validatedPath, cancellationToken).ConfigureAwait(false);
+        var videoStream = info.PrimaryVideoStream
             ?? throw new FrameSamplingException($"'{validatedPath}' has no video stream to sample frames from.");
 
         var dimensions = FrameDimensions.ForTargetWidth(videoStream.Width, videoStream.Height, options.AnalysisWidthPixels, options.PixelFormat);

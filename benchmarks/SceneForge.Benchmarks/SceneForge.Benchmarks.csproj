@@ -7,6 +7,8 @@
 
   <ItemGroup>
     <PackageReference Include="BenchmarkDotNet" />
+    <PackageReference Include="OpenCvSharp4" ExcludeAssets="analyzers" />
+    <PackageReference Include="OpenCvSharp4.runtime.win" />
   </ItemGroup>
 
   <ItemGroup>

@@ -8,4 +8,12 @@
     <ProjectReference Include="..\SceneForge.Core\SceneForge.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- OpenCvSharp4's bundled analyzer targets a newer Roslyn than the
+         pinned .NET 8.0.424 SDK ships; excluding the analyzer asset avoids
+         CS9057 without touching the pinned SDK version (global.json). -->
+    <PackageReference Include="OpenCvSharp4" ExcludeAssets="analyzers" />
+    <PackageReference Include="OpenCvSharp4.runtime.win" />
+  </ItemGroup>
+
 </Project>

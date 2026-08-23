@@ -12,6 +12,8 @@
     <PackageVersion Include="coverlet.collector" Version="6.0.2" />
     <PackageVersion Include="BenchmarkDotNet" Version="0.14.0" />
     <PackageVersion Include="Xunit.SkippableFact" Version="1.5.61" />
+    <PackageVersion Include="OpenCvSharp4" Version="4.13.0.20260627" />
+    <PackageVersion Include="OpenCvSharp4.runtime.win" Version="4.13.0.20260627" />
   </ItemGroup>
 
 </Project>
