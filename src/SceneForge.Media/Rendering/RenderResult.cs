@@ -1,0 +1,24 @@
+namespace SceneForge.Media.Rendering;
+
+// What one successful FFmpegRenderService.RenderAsync call produced.
+// Verification is always present and always passed (IsValid) by the time
+// this is returned - a failing verification throws RenderVerificationException
+// instead (see RenderVerificationException), so a caller never has to
+// remember to check Verification.IsValid itself.
+public sealed record RenderResult
+{
+    public required string OutputFilePath { get; init; }
+
+    public required VideoEncoderSelection Encoder { get; init; }
+
+    // True when the initially selected hardware encoder's actual render
+    // attempt failed (distinct from HardwareEncoderProbe's own smoke test
+    // passing) and FFmpegRenderService retried once with libx264 - see
+    // FFmpegRenderService's "Hardware output must be validated and fall
+    // back safely" handling.
+    public required bool FellBackToSoftwareEncoder { get; init; }
+
+    public required TimeSpan Elapsed { get; init; }
+
+    public required RenderVerificationResult Verification { get; init; }
+}
