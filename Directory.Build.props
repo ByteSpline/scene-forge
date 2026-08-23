@@ -18,4 +18,23 @@
     <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
 
+  <!--
+    OpenCvSharp4's bundled Roslyn analyzer (analyzers/dotnet/cs/OpenCvSharp.Analyzers.dll)
+    targets a newer compiler than the one shipped by the pinned .NET 8.0.424
+    SDK (global.json), which trips CS9057. `ExcludeAssets="analyzers"` on the
+    PackageReference correctly narrows what `dotnet restore` selects into the
+    project's asset graph, but ResolvePackageAssets still surfaces the file as
+    an `Analyzer` item at build time for any project that pulls the package in
+    (a project.assets.json quirk, not an SDK version issue) - so this target
+    is a guaranteed, project-agnostic safety net: it removes that specific
+    Analyzer item right before compilation for any project that references
+    OpenCvSharp4, without touching the pinned SDK. A no-op for every project
+    that doesn't reference the package.
+  -->
+  <Target Name="RemoveIncompatibleOpenCvSharpAnalyzer" BeforeTargets="CoreCompile">
+    <ItemGroup>
+      <Analyzer Remove="@(Analyzer)" Condition="'%(Filename)' == 'OpenCvSharp.Analyzers'" />
+    </ItemGroup>
+  </Target>
+
 </Project>
