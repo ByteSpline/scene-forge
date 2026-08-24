@@ -21,13 +21,6 @@ public sealed class ProjectStore : IProjectStore
         Converters = { new TimeSpanSecondsConverter(), new RationalFrameRateConverter(), new JsonStringEnumConverter() },
     };
 
-    private readonly ITempFileRegistry? _tempFileRegistry;
-
-    public ProjectStore(ITempFileRegistry? tempFileRegistry = null)
-    {
-        _tempFileRegistry = tempFileRegistry;
-    }
-
     public async Task SaveAsync(SceneForgeProjectDocument document, string projectFilePath, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(document);
@@ -36,7 +29,6 @@ public sealed class ProjectStore : IProjectStore
         await AtomicFileWriter.WriteAsync(
             projectFilePath,
             (stream, ct) => JsonSerializer.SerializeAsync(stream, document, Options, ct),
-            _tempFileRegistry,
             cancellationToken).ConfigureAwait(false);
     }
 

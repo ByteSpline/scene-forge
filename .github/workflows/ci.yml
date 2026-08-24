@@ -8,6 +8,20 @@ env:
   DOTNET_CLI_TELEMETRY_OPTOUT: 1
   DOTNET_NOLOGO: 1
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 1
+  # actions/setup-dotnet adds its install directory to PATH, which is all
+  # `dotnet restore`/`build`/`test` ever need (they resolve the SDK through
+  # the ordinary dotnet muxer). `dotnet format` is different: it resolves
+  # MSBuild via Microsoft.Build.Locator, which looks for DOTNET_ROOT first
+  # and only falls back to scanning PATH - and that PATH-scan fallback is a
+  # known, still-open upstream flake (dotnet/format#2218, dotnet/sdk#44957,
+  # actions/setup-dotnet#564): "Unable to locate dotnet CLI. Ensure that it
+  # is on the PATH." even though PATH plainly has it, since every preceding
+  # step in the same job just used it successfully. setup-dotnet installs to
+  # C:\Program Files\dotnet on windows-latest (its documented default
+  # DOTNET_INSTALL_DIR) but does not reliably export DOTNET_ROOT itself, so
+  # this workflow never had it set at all - "Verify formatting" is simply
+  # the only step whose SDK-resolution path actually depends on it.
+  DOTNET_ROOT: C:\Program Files\dotnet
   CI: true
 
 jobs:

@@ -6,12 +6,26 @@ namespace SceneForge.Infrastructure.Persistence;
 // reader can never observe a half-written target file, and a crash between
 // the temp-file write and the replace leaves the previous target file (or
 // none, on first write) exactly as it was - never a corrupted one.
+//
+// This sibling temp file deliberately has nothing to do with
+// ITempFileRegistry. The registry tracks scratch files the app creates
+// directly under its own app-owned Temp root (see TempFileRegistry's
+// remarks) so it can enumerate and sweep exactly that one directory; this
+// writer's temp file instead lives beside whatever target path the caller
+// passes in - e.g. a project checkpoint under .../Projects/<id>/ - which is
+// never inside, and must never be checked against, that Temp-root allowlist.
+// (Feeding this writer's temp file into the registry used to throw
+// InvalidOperationException on every single project save, since
+// Projects/<id>/ and Temp/ are permanent sibling directories under the same
+// app data root - see ProjectStoreTests's regression test for the exact
+// failure this caused.) Crash safety here comes entirely from the
+// write-then-replace pattern itself: a leftover ".tmp-<guid>" file next to a
+// target is inert, since only the real target path is ever read back.
 public static class AtomicFileWriter
 {
     public static async Task WriteAsync(
         string targetFilePath,
         Func<Stream, CancellationToken, Task> writeBody,
-        ITempFileRegistry? tempFileRegistry = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(targetFilePath);
@@ -23,7 +37,6 @@ public static class AtomicFileWriter
         Directory.CreateDirectory(directory);
 
         var tempFilePath = Path.Combine(directory, $"{Path.GetFileName(fullTargetPath)}.tmp-{Guid.NewGuid():N}");
-        tempFileRegistry?.Register(tempFilePath);
 
         try
         {
@@ -48,8 +61,6 @@ public static class AtomicFileWriter
             {
                 File.Delete(tempFilePath);
             }
-
-            tempFileRegistry?.Unregister(tempFilePath);
         }
     }
 }

@@ -77,24 +77,29 @@ public sealed class AtomicFileWriterTests : IDisposable
         Assert.Equal("must survive", await File.ReadAllTextAsync(targetPath));
     }
 
+    // Regression test: AtomicFileWriter's own sibling temp file must never
+    // be checked against an ITempFileRegistry's Temp-root allowlist, even
+    // when the write target sits in a directory that is a sibling of (not
+    // nested under) that registry's root - the exact shape of
+    // ProjectLayout's ProjectsRoot vs. TempRoot in production. See
+    // ProjectStoreTests's SaveAsync_MirrorsProductionLayoutWithSiblingTempRegistry_DoesNotThrow
+    // for the full production-layout reproduction.
     [Fact]
-    public async Task WriteAsync_RegistersTempFileDuringWriteAndUnregistersAfterSuccess()
+    public async Task WriteAsync_TargetDirectoryIsSiblingOfUnrelatedTempRegistryRoot_DoesNotThrow()
     {
-        var registry = new TempFileRegistry(_fixture.Path);
-        var targetPath = Path.Combine(_fixture.Path, "registered.txt");
-        List<string>? capturedDuringWrite = null;
+        var registryRoot = Path.Combine(_fixture.Path, "Temp");
+        _ = new TempFileRegistry(registryRoot);
+        var targetDirectory = Path.Combine(_fixture.Path, "Projects", "some-project");
+        var targetPath = Path.Combine(targetDirectory, "project.sfproj");
 
-        await AtomicFileWriter.WriteAsync(
-            targetPath,
-            (stream, ct) =>
-            {
-                capturedDuringWrite = [.. registry.RegisteredFiles];
-                return Task.CompletedTask;
-            },
-            registry);
+        await AtomicFileWriter.WriteAsync(targetPath, async (stream, ct) =>
+        {
+            await using var writer = new StreamWriter(stream, leaveOpen: true);
+            await writer.WriteAsync("hello");
+        });
 
-        Assert.Single(capturedDuringWrite!);
-        Assert.Empty(registry.RegisteredFiles);
+        Assert.True(File.Exists(targetPath));
+        Assert.Equal("hello", await File.ReadAllTextAsync(targetPath));
     }
 
     public void Dispose() => _fixture.Dispose();

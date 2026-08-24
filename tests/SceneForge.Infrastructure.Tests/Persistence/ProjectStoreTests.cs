@@ -117,5 +117,34 @@ public sealed class ProjectStoreTests : IDisposable
         Assert.Equal(SceneForgeProjectDocument.CurrentSchemaVersion, ex.ExpectedVersion);
     }
 
+    // Regression test (manual end-to-end testing, Step 1 Welcome & Import):
+    // every real autosave goes through the exact production layout this test
+    // recreates - a ProjectLayout whose ProjectsRoot and TempRoot are sibling
+    // directories under one AppDataRoot (see ProjectLayout), with an
+    // app-owned ITempFileRegistry rooted at TempRoot alongside it (see
+    // App.xaml.cs's DI wiring). Saving a project checkpoint into
+    // ProjectsRoot/<id>/project.sfproj must succeed regardless of that
+    // sibling registry's existence: AtomicFileWriter's own sibling temp file
+    // is a same-directory-as-target implementation detail, never a Temp-root
+    // scratch file, so it must never be checked against the registry's
+    // Temp-root allowlist. Before the fix, this failed on every single
+    // autosave with "... is outside the app-owned temp directory ... and
+    // cannot be registered for cleanup."
+    [Fact]
+    public async Task SaveAsync_MirrorsProductionLayoutWithSiblingTempRegistry_DoesNotThrow()
+    {
+        var layout = new ProjectLayout(_fixture.Path);
+        _ = new TempFileRegistry(layout.TempRoot);
+
+        var projectId = Guid.NewGuid();
+        var document = SampleDocumentBuilder.BuildMinimal(projectId, @"C:\videos\source.mp4");
+        var projectFilePath = layout.ProjectFilePath(projectId);
+
+        await _store.SaveAsync(document, projectFilePath);
+
+        var loaded = await _store.LoadAsync(projectFilePath);
+        Assert.Equal(projectId, loaded.ProjectId);
+    }
+
     public void Dispose() => _fixture.Dispose();
 }
