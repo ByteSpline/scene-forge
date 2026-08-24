@@ -1,0 +1,70 @@
+<UserControl x:Class="SceneForge.App.Views.ExportSettingsView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             mc:Ignorable="d"
+             d:DesignWidth="900"
+             MaxWidth="900"
+             HorizontalAlignment="Stretch">
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+    <StackPanel>
+        <TextBlock Text="Export settings" Style="{StaticResource Heading1}" />
+
+        <Border Style="{StaticResource Card}" Margin="0,0,0,16">
+            <StackPanel>
+                <TextBlock Text="Output resolution" Style="{StaticResource Heading2}" />
+                <ComboBox ItemsSource="{Binding AvailableResolutions}"
+                          SelectedItem="{Binding SelectedResolution}"
+                          HorizontalAlignment="Left"
+                          MinWidth="260"
+                          Margin="0,0,0,12"
+                          AutomationProperties.Name="Output resolution" />
+
+                <TextBlock Text="Fit mode" Style="{StaticResource Heading2}" />
+                <TextBlock Style="{StaticResource Caption}"
+                           Margin="0,0,0,8"
+                           Text="Letterbox pads instead of cropping; Fill crops to cover the frame; Stretch fills exactly but may distort." />
+                <ComboBox ItemsSource="{Binding AvailableFitModes}"
+                          SelectedItem="{Binding SelectedFitMode}"
+                          HorizontalAlignment="Left"
+                          MinWidth="260"
+                          Margin="0,0,0,12"
+                          AutomationProperties.Name="Aspect fit mode">
+                    <ComboBox.ItemTemplate>
+                        <DataTemplate>
+                            <TextBlock Text="{Binding Converter={StaticResource EnumToSpacedStringConverter}}" />
+                        </DataTemplate>
+                    </ComboBox.ItemTemplate>
+                </ComboBox>
+
+                <TextBlock Text="{Binding FrameRateSummary}" Style="{StaticResource Caption}" />
+            </StackPanel>
+        </Border>
+
+        <Border Style="{StaticResource Card}" Margin="0,0,0,16">
+            <StackPanel>
+                <TextBlock Text="Output file" Style="{StaticResource Heading2}" />
+                <TextBlock Text="{Binding OutputVideoPath, TargetNullValue='No output file chosen yet.'}"
+                           TextWrapping="Wrap"
+                           Margin="0,0,0,12" />
+                <Button Content="Choose output location..."
+                        Command="{Binding BrowseOutputPathCommand}"
+                        HorizontalAlignment="Left"
+                        AutomationProperties.Name="Choose the output video file location" />
+            </StackPanel>
+        </Border>
+
+        <TextBlock Text="{Binding ErrorMessage}"
+                   Style="{StaticResource ErrorText}"
+                   Margin="0,0,0,16"
+                   Visibility="{Binding ErrorMessage, Converter={StaticResource NullToVisibilityConverter}}"
+                   AutomationProperties.LiveSetting="Assertive" />
+
+        <Button Content="Start render"
+                Command="{Binding ContinueCommand}"
+                HorizontalAlignment="Right"
+                AutomationProperties.Name="Start render" />
+    </StackPanel>
+    </ScrollViewer>
+</UserControl>

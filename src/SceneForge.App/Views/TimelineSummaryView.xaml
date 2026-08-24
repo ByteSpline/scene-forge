@@ -1,0 +1,82 @@
+<UserControl x:Class="SceneForge.App.Views.TimelineSummaryView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:vm="clr-namespace:SceneForge.App.ViewModels"
+             mc:Ignorable="d"
+             d:DesignWidth="1000"
+             HorizontalAlignment="Stretch"
+             VerticalAlignment="Stretch">
+    <UserControl.Resources>
+        <DataTemplate DataType="{x:Type vm:TimelinePlacementRowViewModel}">
+            <Grid Margin="0,4">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="60" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="140" />
+                    <ColumnDefinition Width="140" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="{Binding DisplayPosition}" FontWeight="SemiBold" />
+                <TextBlock Grid.Column="1">
+                    <Run Text="{Binding Clip.Range.Start, Converter={StaticResource TimeSpanToClockStringConverter}, Mode=OneWay}" />
+                    <Run Text=" – " />
+                    <Run Text="{Binding Clip.Range.End, Converter={StaticResource TimeSpanToClockStringConverter}, Mode=OneWay}" />
+                </TextBlock>
+                <TextBlock Grid.Column="2" Text="{Binding Duration, Converter={StaticResource TimeSpanToClockStringConverter}}" />
+                <TextBlock Grid.Column="3" Text="Trimmed" Visibility="{Binding IsTrimmed, Converter={StaticResource NullToVisibilityConverter}}" />
+            </Grid>
+        </DataTemplate>
+    </UserControl.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Margin="0,0,0,12">
+            <TextBlock Text="Timeline summary" Style="{StaticResource Heading1}" />
+
+            <TextBlock Text="{Binding ErrorMessage}"
+                       Style="{StaticResource ErrorText}"
+                       Visibility="{Binding ErrorMessage, Converter={StaticResource NullToVisibilityConverter}}" />
+
+            <Border Style="{StaticResource Card}" Visibility="{Binding ErrorMessage, Converter={StaticResource NullToVisibilityConverter}, ConverterParameter=Invert}">
+                <StackPanel>
+                    <TextBlock>
+                        <Run Text="Planned duration: " />
+                        <Run Text="{Binding PlannedDuration, Converter={StaticResource TimeSpanToClockStringConverter}, Mode=OneWay}" FontWeight="SemiBold" />
+                        <Run Text=" / target " />
+                        <Run Text="{Binding TargetDuration, Converter={StaticResource TimeSpanToClockStringConverter}, Mode=OneWay}" />
+                    </TextBlock>
+                    <TextBlock Text="{Binding FeasibilityWarning}"
+                               Style="{StaticResource ErrorText}"
+                               TextWrapping="Wrap"
+                               Margin="0,8,0,0"
+                               Visibility="{Binding FeasibilityWarning, Converter={StaticResource NullToVisibilityConverter}}" />
+                    <TextBlock Text="Exactly matches the requested audio duration."
+                               Foreground="{DynamicResource Brush.Success}"
+                               Margin="0,8,0,0"
+                               Visibility="{Binding IsComplete, Converter={StaticResource NullToVisibilityConverter}}" />
+                </StackPanel>
+            </Border>
+        </StackPanel>
+
+        <ListView Grid.Row="1"
+                  ItemsSource="{Binding Placements}"
+                  AutomationProperties.Name="Planned clip order" />
+
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+            <Button Content="Reshuffle"
+                    Style="{StaticResource SecondaryButton}"
+                    Command="{Binding ReshuffleCommand}"
+                    Margin="0,0,8,0"
+                    AutomationProperties.Name="Reshuffle with a new seed" />
+            <Button Content="Continue"
+                    Command="{Binding ContinueCommand}"
+                    AutomationProperties.Name="Continue to export settings" />
+        </StackPanel>
+    </Grid>
+</UserControl>

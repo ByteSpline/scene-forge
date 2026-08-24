@@ -1,0 +1,45 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:vm="clr-namespace:SceneForge.App.ViewModels"
+                    xmlns:views="clr-namespace:SceneForge.App.Views">
+
+    <!-- ViewModel-first navigation: MainWindow's ContentControl is bound to
+         MainWindowViewModel.CurrentViewModel (a plain object), and WPF picks
+         the matching View purely from the ViewModel's runtime type via these
+         DataType templates - no code-behind ever constructs a View for a
+         step (CLAUDE.md: "no processing logic in code-behind", extended
+         here to "no navigation logic in code-behind" either). -->
+
+    <DataTemplate DataType="{x:Type vm:WelcomeImportViewModel}">
+        <views:WelcomeImportView />
+    </DataTemplate>
+
+    <DataTemplate DataType="{x:Type vm:AnalysisSettingsViewModel}">
+        <views:AnalysisSettingsView />
+    </DataTemplate>
+
+    <DataTemplate DataType="{x:Type vm:AnalysisProgressViewModel}">
+        <views:AnalysisProgressView />
+    </DataTemplate>
+
+    <DataTemplate DataType="{x:Type vm:SceneReviewViewModel}">
+        <views:SceneReviewView />
+    </DataTemplate>
+
+    <DataTemplate DataType="{x:Type vm:TimelineSummaryViewModel}">
+        <views:TimelineSummaryView />
+    </DataTemplate>
+
+    <DataTemplate DataType="{x:Type vm:ExportSettingsViewModel}">
+        <views:ExportSettingsView />
+    </DataTemplate>
+
+    <DataTemplate DataType="{x:Type vm:RenderProgressViewModel}">
+        <views:RenderProgressView />
+    </DataTemplate>
+
+    <DataTemplate DataType="{x:Type vm:CompletionViewModel}">
+        <views:CompletionView />
+    </DataTemplate>
+
+</ResourceDictionary>

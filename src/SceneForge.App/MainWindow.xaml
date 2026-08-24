@@ -3,13 +3,71 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-        xmlns:local="clr-namespace:SceneForge.App"
         mc:Ignorable="d"
-        Title="SceneForge" Height="450" Width="800">
-    <Grid>
-        <TextBlock Text="SceneForge"
-                   HorizontalAlignment="Center"
-                   VerticalAlignment="Center"
-                   FontSize="24" />
-    </Grid>
+        Title="SceneForge"
+        Height="820" Width="1280"
+        MinHeight="600" MinWidth="960"
+        WindowStartupLocation="CenterScreen"
+        Background="{DynamicResource Brush.WindowBackground}"
+        KeyboardNavigation.TabNavigation="Cycle">
+
+    <DockPanel LastChildFill="True">
+
+        <!-- Step indicator + back navigation. AutomationProperties.LiveSetting
+             lets a screen reader announce step changes without the user
+             needing to re-locate focus. -->
+        <Border DockPanel.Dock="Top"
+                Background="{DynamicResource Brush.PanelBackground}"
+                BorderBrush="{DynamicResource Brush.PanelBorder}"
+                BorderThickness="0,0,0,1"
+                Padding="16,10">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+
+                <Button Grid.Column="0"
+                        Style="{StaticResource SecondaryButton}"
+                        Content="← Back"
+                        Command="{Binding GoBackCommand}"
+                        Visibility="{Binding IsBackAllowed, Converter={StaticResource NullToVisibilityConverter}}"
+                        AutomationProperties.Name="Go back to the previous step"
+                        Margin="0,0,16,0" />
+
+                <TextBlock Grid.Column="1"
+                           Text="{Binding CurrentStep, Converter={StaticResource WorkflowStepToDisplayConverter}}"
+                           Style="{StaticResource Heading2}"
+                           Margin="0"
+                           VerticalAlignment="Center"
+                           AutomationProperties.LiveSetting="Polite" />
+            </Grid>
+        </Border>
+
+        <!-- No-network reassurance, always visible (CLAUDE.md rule 2). -->
+        <Border DockPanel.Dock="Bottom"
+                Background="{DynamicResource Brush.PanelBackground}"
+                BorderBrush="{DynamicResource Brush.PanelBorder}"
+                BorderThickness="0,1,0,0"
+                Padding="16,8">
+            <TextBlock Text="SceneForge runs entirely on this computer. No internet connection is used or required."
+                       Style="{StaticResource Caption}"
+                       HorizontalAlignment="Center" />
+        </Border>
+
+        <!-- Deliberately no ScrollViewer here: Scene Review's clip list
+             relies on its own bounded-height ScrollViewer/virtualizing
+             ListView to keep virtualization working (a virtualizing panel
+             given effectively infinite height by an ancestor ScrollViewer
+             would realize every row up front, defeating CLAUDE.md rule
+             6/7). Every other View wraps its own content in a ScrollViewer
+             where it might overflow. -->
+        <ContentControl x:Name="ContentHost"
+                         Content="{Binding CurrentViewModel}"
+                         Focusable="False"
+                         Margin="24"
+                         HorizontalContentAlignment="Stretch"
+                         VerticalContentAlignment="Stretch" />
+
+    </DockPanel>
 </Window>

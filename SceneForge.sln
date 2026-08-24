@@ -23,6 +23,8 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "benchmarks", "benchmarks", 
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SceneForge.Benchmarks", "benchmarks\SceneForge.Benchmarks\SceneForge.Benchmarks.csproj", "{80619F54-C45D-4101-B027-511D50BB2CB4}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SceneForge.App.Tests", "tests\SceneForge.App.Tests\SceneForge.App.Tests.csproj", "{EE37CE46-6B65-4F10-B98A-7D42EE5A708B}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -60,6 +62,10 @@ Global
 		{80619F54-C45D-4101-B027-511D50BB2CB4}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{80619F54-C45D-4101-B027-511D50BB2CB4}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{80619F54-C45D-4101-B027-511D50BB2CB4}.Release|Any CPU.Build.0 = Release|Any CPU
+		{EE37CE46-6B65-4F10-B98A-7D42EE5A708B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{EE37CE46-6B65-4F10-B98A-7D42EE5A708B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{EE37CE46-6B65-4F10-B98A-7D42EE5A708B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{EE37CE46-6B65-4F10-B98A-7D42EE5A708B}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{16FC762A-2413-45F4-AC70-25AEED51AE2B} = {A72CF2FB-5E01-450B-8F91-C1BAB89F11ED}
@@ -69,5 +75,6 @@ Global
 		{296AE7AB-C4F0-4894-BBE9-BD4C745B58EC} = {31EC64DC-24E4-4E3C-87CF-24F9DA211DB1}
 		{181F48FE-DF89-45F0-846D-2BEA272ACCE4} = {31EC64DC-24E4-4E3C-87CF-24F9DA211DB1}
 		{80619F54-C45D-4101-B027-511D50BB2CB4} = {BA5C3E9E-8769-40F6-BD44-BC0890948E56}
+		{EE37CE46-6B65-4F10-B98A-7D42EE5A708B} = {31EC64DC-24E4-4E3C-87CF-24F9DA211DB1}
 	EndGlobalSection
 EndGlobal

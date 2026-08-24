@@ -1,0 +1,63 @@
+<UserControl x:Class="SceneForge.App.Views.CompletionView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             mc:Ignorable="d"
+             d:DesignWidth="900"
+             MaxWidth="900"
+             HorizontalAlignment="Stretch">
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+    <StackPanel>
+        <TextBlock Text="Render complete" Style="{StaticResource Heading1}" />
+
+        <Border Style="{StaticResource Card}" Margin="0,0,0,16">
+            <StackPanel>
+                <TextBlock Text="{Binding OutputFilePath}" TextWrapping="Wrap" Margin="0,0,0,8" />
+                <TextBlock>
+                    <Run Text="Encoder: " />
+                    <Run Text="{Binding EncoderDescription, Mode=OneWay}" />
+                </TextBlock>
+                <TextBlock Text="This render fell back to the software encoder after the hardware encoder failed mid-render."
+                           Style="{StaticResource ErrorText}"
+                           TextWrapping="Wrap"
+                           Margin="0,4,0,0"
+                           Visibility="{Binding FellBackToSoftwareEncoder, Converter={StaticResource NullToVisibilityConverter}}" />
+                <TextBlock Margin="0,4,0,0">
+                    <Run Text="Total render time: " />
+                    <Run Text="{Binding Elapsed, Converter={StaticResource TimeSpanToClockStringConverter}, Mode=OneWay}" />
+                </TextBlock>
+            </StackPanel>
+        </Border>
+
+        <Border Style="{StaticResource Card}" Margin="0,0,0,16">
+            <StackPanel>
+                <TextBlock Text="Output verification" Style="{StaticResource Heading2}" />
+                <TextBlock Text="Every check passed: expected video/audio streams present, duration within tolerance, first/middle/last frames decodable."
+                           TextWrapping="Wrap"
+                           Foreground="{DynamicResource Brush.Success}"
+                           Visibility="{Binding VerificationPassed, Converter={StaticResource NullToVisibilityConverter}}" />
+                <ItemsControl ItemsSource="{Binding VerificationFailures}"
+                              Visibility="{Binding VerificationPassed, Converter={StaticResource NullToVisibilityConverter}, ConverterParameter=Invert}">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <TextBlock Text="{Binding}" Style="{StaticResource ErrorText}" TextWrapping="Wrap" />
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </StackPanel>
+        </Border>
+
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button Content="Open output folder"
+                    Style="{StaticResource SecondaryButton}"
+                    Command="{Binding OpenOutputFolderCommand}"
+                    Margin="0,0,8,0"
+                    AutomationProperties.Name="Open the output folder in File Explorer" />
+            <Button Content="Start over"
+                    Command="{Binding StartOverCommand}"
+                    AutomationProperties.Name="Start a new SceneForge session" />
+        </StackPanel>
+    </StackPanel>
+    </ScrollViewer>
+</UserControl>

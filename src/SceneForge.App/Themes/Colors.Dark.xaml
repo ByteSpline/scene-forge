@@ -1,0 +1,26 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- Dark palette - same semantic key set as Colors.Light.xaml, chosen so
+         no color pair reduces to pure black/white (avoids crushed contrast
+         on real displays) and every text/background pairing keeps
+         comfortable contrast for readability. -->
+    <SolidColorBrush x:Key="Brush.WindowBackground" Color="#1E1F22" />
+    <SolidColorBrush x:Key="Brush.PanelBackground" Color="#2B2D31" />
+    <SolidColorBrush x:Key="Brush.PanelBorder" Color="#3F4147" />
+    <SolidColorBrush x:Key="Brush.TextPrimary" Color="#F0F0F0" />
+    <SolidColorBrush x:Key="Brush.TextSecondary" Color="#B4B7BD" />
+    <SolidColorBrush x:Key="Brush.Accent" Color="#5AA6FF" />
+    <SolidColorBrush x:Key="Brush.AccentHover" Color="#7FBBFF" />
+    <SolidColorBrush x:Key="Brush.AccentText" Color="#0B1522" />
+    <SolidColorBrush x:Key="Brush.Success" Color="#5FCE7C" />
+    <SolidColorBrush x:Key="Brush.Warning" Color="#E3B341" />
+    <SolidColorBrush x:Key="Brush.Error" Color="#F2735C" />
+    <SolidColorBrush x:Key="Brush.Disabled" Color="#6B6E76" />
+    <SolidColorBrush x:Key="Brush.InputBackground" Color="#26282C" />
+    <SolidColorBrush x:Key="Brush.InputBorder" Color="#565961" />
+    <SolidColorBrush x:Key="Brush.HoverBackground" Color="#33363C" />
+    <SolidColorBrush x:Key="Brush.SelectedBackground" Color="#2E4A6E" />
+    <SolidColorBrush x:Key="Brush.FocusVisual" Color="#5AA6FF" />
+
+</ResourceDictionary>
