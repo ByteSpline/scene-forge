@@ -30,3 +30,8 @@ Thumbs.db
 ## relative to the app, never via PATH - see SceneForge.Media.Tooling.FfmpegToolLocator)
 tools/
 **/tools/ffmpeg/
+
+## Generated fixture binaries (never committed - regenerated deterministically
+## from tests/fixtures/manifest.json via SceneForge.Accuracy's `generate`
+## command; see tests/fixtures/README.md)
+tests/fixtures/generated/

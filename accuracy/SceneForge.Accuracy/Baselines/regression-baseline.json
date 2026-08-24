@@ -1,0 +1,197 @@
+{
+  "hardware": {
+    "cpuName": "AMD Ryzen 5 3500U with Radeon Vega Mobile Gfx",
+    "logicalProcessorCount": 8,
+    "totalMemoryGigabytes": 13.9,
+    "operatingSystem": "Microsoft Windows 10.0.19045",
+    "dotNetSdkVersion": ".NET 8.0.30"
+  },
+  "report": {
+    "capturedAtUtc": "2026-08-24T06:19:33.1758393+00:00",
+    "commitSha": "a0f890285dc16b2c7a0902e78d2bca12f14049cf",
+    "profile": "Accurate",
+    "fixtureCount": 32,
+    "metrics": [
+      {
+        "group": "HardCut",
+        "truePositives": 1,
+        "falseNegatives": 1,
+        "falsePositives": 1,
+        "recall": 0.5,
+        "precision": 0.5,
+        "f1": 0.5,
+        "meanBoundaryErrorMs": 0,
+        "falsePositivesPerMinute": 10
+      },
+      {
+        "group": "FadeToBlack",
+        "truePositives": 2,
+        "falseNegatives": 0,
+        "falsePositives": 0,
+        "recall": 1,
+        "precision": 1,
+        "f1": 1,
+        "meanBoundaryErrorMs": 250,
+        "falsePositivesPerMinute": 0
+      },
+      {
+        "group": "FadeFromBlack",
+        "truePositives": 1,
+        "falseNegatives": 1,
+        "falsePositives": 1,
+        "recall": 0.5,
+        "precision": 0.5,
+        "f1": 0.5,
+        "meanBoundaryErrorMs": 750,
+        "falsePositivesPerMinute": 10
+      },
+      {
+        "group": "Dissolve",
+        "truePositives": 1,
+        "falseNegatives": 1,
+        "falsePositives": 2,
+        "recall": 0.5,
+        "precision": 0.3333333333333333,
+        "f1": 0.4,
+        "meanBoundaryErrorMs": 125,
+        "falsePositivesPerMinute": 20
+      },
+      {
+        "group": "Flash",
+        "truePositives": 2,
+        "falseNegatives": 0,
+        "falsePositives": 0,
+        "recall": 1,
+        "precision": 1,
+        "f1": 1,
+        "meanBoundaryErrorMs": 130,
+        "falsePositivesPerMinute": 0
+      },
+      {
+        "group": "BlurTransition",
+        "truePositives": 1,
+        "falseNegatives": 1,
+        "falsePositives": 2,
+        "recall": 0.5,
+        "precision": 0.3333333333333333,
+        "f1": 0.4,
+        "meanBoundaryErrorMs": 0,
+        "falsePositivesPerMinute": 20
+      },
+      {
+        "group": "ZoomTransition",
+        "truePositives": 0,
+        "falseNegatives": 2,
+        "falsePositives": 2,
+        "recall": 0,
+        "precision": 0,
+        "f1": "NaN",
+        "meanBoundaryErrorMs": "NaN",
+        "falsePositivesPerMinute": 20
+      },
+      {
+        "group": "DirectionalSwipe",
+        "truePositives": 0,
+        "falseNegatives": 2,
+        "falsePositives": 2,
+        "recall": 0,
+        "precision": 0,
+        "f1": "NaN",
+        "meanBoundaryErrorMs": "NaN",
+        "falsePositivesPerMinute": 20
+      },
+      {
+        "group": "BlackHold",
+        "truePositives": 0,
+        "falseNegatives": 0,
+        "falsePositives": 0,
+        "recall": "NaN",
+        "precision": "NaN",
+        "f1": "NaN",
+        "meanBoundaryErrorMs": "NaN",
+        "falsePositivesPerMinute": 0
+      },
+      {
+        "group": "FrozenFrame",
+        "truePositives": 0,
+        "falseNegatives": 0,
+        "falsePositives": 0,
+        "recall": "NaN",
+        "precision": "NaN",
+        "f1": "NaN",
+        "meanBoundaryErrorMs": "NaN",
+        "falsePositivesPerMinute": 0
+      },
+      {
+        "group": "StaticShot",
+        "truePositives": 0,
+        "falseNegatives": 0,
+        "falsePositives": 0,
+        "recall": "NaN",
+        "precision": "NaN",
+        "f1": "NaN",
+        "meanBoundaryErrorMs": "NaN",
+        "falsePositivesPerMinute": 0
+      },
+      {
+        "group": "RapidMotion",
+        "truePositives": 0,
+        "falseNegatives": 0,
+        "falsePositives": 1,
+        "recall": "NaN",
+        "precision": 0,
+        "f1": "NaN",
+        "meanBoundaryErrorMs": "NaN",
+        "falsePositivesPerMinute": 10
+      },
+      {
+        "group": "VariableFrameRate",
+        "truePositives": 1,
+        "falseNegatives": 1,
+        "falsePositives": 1,
+        "recall": 0.5,
+        "precision": 0.5,
+        "f1": 0.5,
+        "meanBoundaryErrorMs": 0,
+        "falsePositivesPerMinute": 10
+      },
+      {
+        "group": "MixedResolution",
+        "truePositives": 1,
+        "falseNegatives": 2,
+        "falsePositives": 3,
+        "recall": 0.3333333333333333,
+        "precision": 0.25,
+        "f1": 0.28571428571428575,
+        "meanBoundaryErrorMs": 0,
+        "falsePositivesPerMinute": 20
+      },
+      {
+        "group": "Rotated",
+        "truePositives": 1,
+        "falseNegatives": 2,
+        "falsePositives": 2,
+        "recall": 0.3333333333333333,
+        "precision": 0.3333333333333333,
+        "f1": 0.3333333333333333,
+        "meanBoundaryErrorMs": 0,
+        "falsePositivesPerMinute": 13.333333333333334
+      },
+      {
+        "group": null,
+        "truePositives": 11,
+        "falseNegatives": 13,
+        "falsePositives": 17,
+        "recall": 0.4583333333333333,
+        "precision": 0.39285714285714285,
+        "f1": 0.4230769230769231,
+        "meanBoundaryErrorMs": 148.63636363636363,
+        "falsePositivesPerMinute": 10.625
+      }
+    ],
+    "throughputSourceSecondsPerWallClockSecond": 1.4278504575805588,
+    "totalWallClockSeconds": 67.2339316,
+    "peakManagedMemoryBytes": 9712040,
+    "peakWorkingSetBytes": 70590464
+  }
+}

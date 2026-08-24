@@ -1,0 +1,340 @@
+{
+  "entries": [
+    {
+      "id": "hardcut_v0",
+      "group": "HardCut",
+      "sourceDurationSeconds": 3,
+      "expectedWindows": [
+        {
+          "start": 1,
+          "end": 1,
+          "duration": 0
+        }
+      ]
+    },
+    {
+      "id": "fadetoblack_v0",
+      "group": "FadeToBlack",
+      "sourceDurationSeconds": 3,
+      "expectedWindows": [
+        {
+          "start": 1,
+          "end": 1.5,
+          "duration": 0.5
+        }
+      ]
+    },
+    {
+      "id": "fadefromblack_v0",
+      "group": "FadeFromBlack",
+      "sourceDurationSeconds": 3,
+      "expectedWindows": [
+        {
+          "start": 1,
+          "end": 1.5,
+          "duration": 0.5
+        }
+      ]
+    },
+    {
+      "id": "dissolve_v0",
+      "group": "Dissolve",
+      "sourceDurationSeconds": 3,
+      "expectedWindows": [
+        {
+          "start": 1,
+          "end": 1.5,
+          "duration": 0.5
+        }
+      ]
+    },
+    {
+      "id": "flash_v0",
+      "group": "Flash",
+      "sourceDurationSeconds": 3,
+      "expectedWindows": [
+        {
+          "start": 1,
+          "end": 1.26,
+          "duration": 0.26
+        }
+      ]
+    },
+    {
+      "id": "blur_v0",
+      "group": "BlurTransition",
+      "sourceDurationSeconds": 3,
+      "expectedWindows": [
+        {
+          "start": 1,
+          "end": 1.5,
+          "duration": 0.5
+        }
+      ]
+    },
+    {
+      "id": "zoom_v0",
+      "group": "ZoomTransition",
+      "sourceDurationSeconds": 3,
+      "expectedWindows": [
+        {
+          "start": 1,
+          "end": 1.5,
+          "duration": 0.5
+        }
+      ]
+    },
+    {
+      "id": "swipe_v0",
+      "group": "DirectionalSwipe",
+      "sourceDurationSeconds": 3,
+      "expectedWindows": [
+        {
+          "start": 1,
+          "end": 1.5,
+          "duration": 0.5
+        }
+      ]
+    },
+    {
+      "id": "blackhold_v0",
+      "group": "BlackHold",
+      "sourceDurationSeconds": 3,
+      "expectedWindows": []
+    },
+    {
+      "id": "frozen_v0",
+      "group": "FrozenFrame",
+      "sourceDurationSeconds": 3,
+      "expectedWindows": []
+    },
+    {
+      "id": "static_v0",
+      "group": "StaticShot",
+      "sourceDurationSeconds": 3,
+      "expectedWindows": []
+    },
+    {
+      "id": "rapidmotion_v0",
+      "group": "RapidMotion",
+      "sourceDurationSeconds": 3,
+      "expectedWindows": []
+    },
+    {
+      "id": "vfr_hardcut_v0",
+      "group": "VariableFrameRate",
+      "sourceDurationSeconds": 3,
+      "expectedWindows": [
+        {
+          "start": 1,
+          "end": 1,
+          "duration": 0
+        }
+      ]
+    },
+    {
+      "id": "hardcut_v1",
+      "group": "HardCut",
+      "sourceDurationSeconds": 3,
+      "expectedWindows": [
+        {
+          "start": 1,
+          "end": 1,
+          "duration": 0
+        }
+      ]
+    },
+    {
+      "id": "fadetoblack_v1",
+      "group": "FadeToBlack",
+      "sourceDurationSeconds": 3,
+      "expectedWindows": [
+        {
+          "start": 1,
+          "end": 1.5,
+          "duration": 0.5
+        }
+      ]
+    },
+    {
+      "id": "fadefromblack_v1",
+      "group": "FadeFromBlack",
+      "sourceDurationSeconds": 3,
+      "expectedWindows": [
+        {
+          "start": 1,
+          "end": 1.5,
+          "duration": 0.5
+        }
+      ]
+    },
+    {
+      "id": "dissolve_v1",
+      "group": "Dissolve",
+      "sourceDurationSeconds": 3,
+      "expectedWindows": [
+        {
+          "start": 1,
+          "end": 1.5,
+          "duration": 0.5
+        }
+      ]
+    },
+    {
+      "id": "flash_v1",
+      "group": "Flash",
+      "sourceDurationSeconds": 3,
+      "expectedWindows": [
+        {
+          "start": 1,
+          "end": 1.26,
+          "duration": 0.26
+        }
+      ]
+    },
+    {
+      "id": "blur_v1",
+      "group": "BlurTransition",
+      "sourceDurationSeconds": 3,
+      "expectedWindows": [
+        {
+          "start": 1,
+          "end": 1.5,
+          "duration": 0.5
+        }
+      ]
+    },
+    {
+      "id": "zoom_v1",
+      "group": "ZoomTransition",
+      "sourceDurationSeconds": 3,
+      "expectedWindows": [
+        {
+          "start": 1,
+          "end": 1.5,
+          "duration": 0.5
+        }
+      ]
+    },
+    {
+      "id": "swipe_v1",
+      "group": "DirectionalSwipe",
+      "sourceDurationSeconds": 3,
+      "expectedWindows": [
+        {
+          "start": 1,
+          "end": 1.5,
+          "duration": 0.5
+        }
+      ]
+    },
+    {
+      "id": "blackhold_v1",
+      "group": "BlackHold",
+      "sourceDurationSeconds": 3,
+      "expectedWindows": []
+    },
+    {
+      "id": "frozen_v1",
+      "group": "FrozenFrame",
+      "sourceDurationSeconds": 3,
+      "expectedWindows": []
+    },
+    {
+      "id": "static_v1",
+      "group": "StaticShot",
+      "sourceDurationSeconds": 3,
+      "expectedWindows": []
+    },
+    {
+      "id": "rapidmotion_v1",
+      "group": "RapidMotion",
+      "sourceDurationSeconds": 3,
+      "expectedWindows": []
+    },
+    {
+      "id": "vfr_hardcut_v1",
+      "group": "VariableFrameRate",
+      "sourceDurationSeconds": 3,
+      "expectedWindows": [
+        {
+          "start": 1,
+          "end": 1,
+          "duration": 0
+        }
+      ]
+    },
+    {
+      "id": "mixedres_160x90_v0",
+      "group": "MixedResolution",
+      "sourceDurationSeconds": 3,
+      "expectedWindows": [
+        {
+          "start": 1,
+          "end": 1,
+          "duration": 0
+        }
+      ]
+    },
+    {
+      "id": "mixedres_320x180_v1",
+      "group": "MixedResolution",
+      "sourceDurationSeconds": 3,
+      "expectedWindows": [
+        {
+          "start": 1,
+          "end": 1,
+          "duration": 0
+        }
+      ]
+    },
+    {
+      "id": "mixedres_640x360_v0",
+      "group": "MixedResolution",
+      "sourceDurationSeconds": 3,
+      "expectedWindows": [
+        {
+          "start": 1,
+          "end": 1,
+          "duration": 0
+        }
+      ]
+    },
+    {
+      "id": "rotated_90_v0",
+      "group": "Rotated",
+      "sourceDurationSeconds": 3,
+      "expectedWindows": [
+        {
+          "start": 1,
+          "end": 1,
+          "duration": 0
+        }
+      ]
+    },
+    {
+      "id": "rotated_180_v1",
+      "group": "Rotated",
+      "sourceDurationSeconds": 3,
+      "expectedWindows": [
+        {
+          "start": 1,
+          "end": 1,
+          "duration": 0
+        }
+      ]
+    },
+    {
+      "id": "rotated_270_v0",
+      "group": "Rotated",
+      "sourceDurationSeconds": 3,
+      "expectedWindows": [
+        {
+          "start": 1,
+          "end": 1,
+          "duration": 0
+        }
+      ]
+    }
+  ]
+}
