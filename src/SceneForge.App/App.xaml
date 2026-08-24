@@ -1,9 +1,27 @@
-﻿<Application x:Class="SceneForge.App.App"
+<Application x:Class="SceneForge.App.App"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:local="clr-namespace:SceneForge.App"
-             StartupUri="MainWindow.xaml">
+             xmlns:converters="clr-namespace:SceneForge.App.Converters">
     <Application.Resources>
-         
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <!-- Colors.*.xaml is selected/inserted at index 0 by
+                     App.OnStartup (see ApplySystemColorTheme) before this
+                     dictionary is used - Styles.xaml/DataTemplates.xaml
+                     below only ever reference color keys via
+                     DynamicResource, never a literal color, so they render
+                     correctly under either palette. -->
+                <ResourceDictionary Source="Themes/Styles.xaml" />
+                <ResourceDictionary Source="Themes/DataTemplates.xaml" />
+            </ResourceDictionary.MergedDictionaries>
+
+            <converters:TimeSpanToClockStringConverter x:Key="TimeSpanToClockStringConverter" />
+            <converters:EditableTimeSpanConverter x:Key="EditableTimeSpanConverter" />
+            <converters:ConfidenceToPercentStringConverter x:Key="ConfidenceToPercentStringConverter" />
+            <converters:EnumToSpacedStringConverter x:Key="EnumToSpacedStringConverter" />
+            <converters:NullToVisibilityConverter x:Key="NullToVisibilityConverter" />
+            <converters:WorkflowStepToDisplayConverter x:Key="WorkflowStepToDisplayConverter" />
+        </ResourceDictionary>
     </Application.Resources>
 </Application>

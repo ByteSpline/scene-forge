@@ -4,12 +4,25 @@
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <!-- WPF's data-binding engine (XmlLanguage.GetSpecificCulture) needs
+         real per-culture data and throws InvalidOperationException
+         ("Cannot find non-neutral culture...") under invariant
+         globalization - override the repo-wide default
+         (Directory.Build.props) back to false for this project only. Every
+         other project keeps InvariantGlobalization=true unchanged. -->
+    <InvariantGlobalization>false</InvariantGlobalization>
   </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\SceneForge.Core\SceneForge.Core.csproj" />
     <ProjectReference Include="..\SceneForge.Media\SceneForge.Media.csproj" />
     <ProjectReference Include="..\SceneForge.Infrastructure\SceneForge.Infrastructure.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="CommunityToolkit.Mvvm" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
   </ItemGroup>
 
 </Project>

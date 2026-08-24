@@ -1,0 +1,61 @@
+<UserControl x:Class="SceneForge.App.Views.AnalysisProgressView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             mc:Ignorable="d"
+             d:DesignWidth="900"
+             MaxWidth="900"
+             HorizontalAlignment="Stretch">
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+    <StackPanel>
+        <TextBlock Text="Analyzing your video" Style="{StaticResource Heading1}" />
+
+        <Border Style="{StaticResource Card}">
+            <StackPanel>
+                <TextBlock Text="{Binding StatusText}"
+                           Style="{StaticResource Heading2}"
+                           AutomationProperties.LiveSetting="Polite" />
+
+                <ProgressBar IsIndeterminate="True"
+                             Margin="0,4,0,16"
+                             Visibility="{Binding IsRunning, Converter={StaticResource NullToVisibilityConverter}}" />
+
+                <UniformGrid Columns="3" Margin="0,0,0,16">
+                    <StackPanel Margin="0,0,16,0">
+                        <TextBlock Text="Transitions found" Style="{StaticResource Caption}" />
+                        <TextBlock Text="{Binding TransitionsFound}" FontSize="20" FontWeight="SemiBold" />
+                    </StackPanel>
+                    <StackPanel Margin="0,0,16,0">
+                        <TextBlock Text="Clips accepted" Style="{StaticResource Caption}" />
+                        <TextBlock Text="{Binding ClipsAccepted}" FontSize="20" FontWeight="SemiBold" />
+                    </StackPanel>
+                    <StackPanel>
+                        <TextBlock Text="Clips rejected" Style="{StaticResource Caption}" />
+                        <TextBlock Text="{Binding ClipsRejected}" FontSize="20" FontWeight="SemiBold" />
+                    </StackPanel>
+                </UniformGrid>
+
+                <TextBlock Text="{Binding ErrorMessage}"
+                           Style="{StaticResource ErrorText}"
+                           Margin="0,0,0,12"
+                           Visibility="{Binding ErrorMessage, Converter={StaticResource NullToVisibilityConverter}}"
+                           AutomationProperties.LiveSetting="Assertive" />
+
+                <StackPanel Orientation="Horizontal">
+                    <Button Content="Cancel"
+                            Style="{StaticResource SecondaryButton}"
+                            Command="{Binding CancelCommand}"
+                            Visibility="{Binding IsRunning, Converter={StaticResource NullToVisibilityConverter}}"
+                            AutomationProperties.Name="Cancel analysis"
+                            Margin="0,0,8,0" />
+                    <Button Content="Retry"
+                            Command="{Binding RunCommand}"
+                            Visibility="{Binding ErrorMessage, Converter={StaticResource NullToVisibilityConverter}}"
+                            AutomationProperties.Name="Retry analysis" />
+                </StackPanel>
+            </StackPanel>
+        </Border>
+    </StackPanel>
+    </ScrollViewer>
+</UserControl>

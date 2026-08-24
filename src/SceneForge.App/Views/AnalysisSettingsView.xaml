@@ -1,0 +1,68 @@
+<UserControl x:Class="SceneForge.App.Views.AnalysisSettingsView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             mc:Ignorable="d"
+             d:DesignWidth="900"
+             MaxWidth="900"
+             HorizontalAlignment="Stretch">
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+    <StackPanel>
+        <TextBlock Text="Analysis settings" Style="{StaticResource Heading1}" />
+
+        <Border Style="{StaticResource Card}" Margin="0,0,0,16">
+            <StackPanel>
+                <TextBlock Text="{Binding VideoSummary}" Margin="0,0,0,4" />
+                <TextBlock Text="{Binding AudioSummary}" />
+            </StackPanel>
+        </Border>
+
+        <Border Style="{StaticResource Card}" Margin="0,0,0,16">
+            <StackPanel>
+                <TextBlock Text="Analysis profile" Style="{StaticResource Heading2}" />
+                <TextBlock Style="{StaticResource Caption}"
+                           Margin="0,0,0,8"
+                           Text="Fast analyzes fewer frames for a quick pass; Accurate samples more frames for a slower, more thorough analysis." />
+                <ComboBox ItemsSource="{Binding AvailableProfiles}"
+                          SelectedItem="{Binding SelectedProfile}"
+                          HorizontalAlignment="Left"
+                          MinWidth="200"
+                          AutomationProperties.Name="Analysis profile" />
+            </StackPanel>
+        </Border>
+
+        <Border Style="{StaticResource Card}" Margin="0,0,0,16">
+            <StackPanel>
+                <TextBlock Text="Output frame rate" Style="{StaticResource Heading2}" />
+                <TextBlock Style="{StaticResource Caption}"
+                           Margin="0,0,0,8"
+                           Text="Applies to the final rendered video. Cannot be changed after analysis starts." />
+                <ComboBox ItemsSource="{Binding AvailableFrameRates}"
+                          SelectedItem="{Binding SelectedFrameRate}"
+                          HorizontalAlignment="Left"
+                          MinWidth="200"
+                          AutomationProperties.Name="Output frame rate" />
+            </StackPanel>
+        </Border>
+
+        <Border Style="{StaticResource Card}" Margin="0,0,0,16">
+            <StackPanel>
+                <TextBlock Text="Shuffle seed" Style="{StaticResource Heading2}" />
+                <TextBlock Style="{StaticResource Caption}"
+                           Margin="0,0,0,8"
+                           Text="The same seed against the same clips always produces the same timeline order. Change it for a different (still reproducible) order." />
+                <TextBox Text="{Binding Seed, UpdateSourceTrigger=PropertyChanged}"
+                         HorizontalAlignment="Left"
+                         MinWidth="120"
+                         AutomationProperties.Name="Shuffle seed" />
+            </StackPanel>
+        </Border>
+
+        <Button Content="Start analysis"
+                Command="{Binding StartAnalysisCommand}"
+                HorizontalAlignment="Right"
+                AutomationProperties.Name="Start analysis" />
+    </StackPanel>
+    </ScrollViewer>
+</UserControl>

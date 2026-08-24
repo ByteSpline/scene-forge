@@ -1,7 +1,131 @@
+using System.IO;
+using System.Security;
 using System.Windows;
+using System.Windows.Threading;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Win32;
+using SceneForge.App.Navigation;
+using SceneForge.App.Services;
+using SceneForge.App.Session;
+using SceneForge.App.ViewModels;
+using SceneForge.Media.Detection;
+using SceneForge.Media.Extraction;
+using SceneForge.Media.Planning;
+using SceneForge.Media.Probing;
+using SceneForge.Media.Processes;
+using SceneForge.Media.Rendering;
+using SceneForge.Media.Sampling;
+using SceneForge.Media.Tooling;
 
 namespace SceneForge.App;
 
+// Composition root: builds the DI container and resolves the shell window.
+// Every SceneForge.Media interface used anywhere in the App layer is
+// registered exactly once, here - no ViewModel or service ever calls `new`
+// on a Media implementation type directly (CLAUDE.md rule 4: UI concerns
+// stay separate from, and only ever depend inward on, core/processing
+// logic).
 public partial class App : Application
 {
+    private ServiceProvider? _serviceProvider;
+
+    protected override void OnStartup(StartupEventArgs e)
+    {
+        base.OnStartup(e);
+
+        ApplySystemColorTheme();
+
+        var services = new ServiceCollection();
+        ConfigureServices(services);
+        _serviceProvider = services.BuildServiceProvider();
+
+        DispatcherUnhandledException += OnDispatcherUnhandledException;
+
+        var mainWindow = _serviceProvider.GetRequiredService<MainWindow>();
+        MainWindow = mainWindow;
+        mainWindow.Show();
+    }
+
+    protected override void OnExit(ExitEventArgs e)
+    {
+        _serviceProvider?.Dispose();
+        base.OnExit(e);
+    }
+
+    private static void ConfigureServices(IServiceCollection services)
+    {
+        // SceneForge.Media pipeline - the same real implementations every
+        // prior phase's tests exercise. Registered as singletons: none of
+        // them hold per-run mutable state (each call takes its own request/
+        // options record), so sharing one instance across the whole app
+        // lifetime is safe and avoids re-locating ffmpeg/ffprobe on every
+        // screen.
+        services.AddSingleton<IProcessRunner, ProcessRunner>();
+        services.AddSingleton<IFfmpegToolLocator, FfmpegToolLocator>();
+        services.AddSingleton<IFfprobeService, FfprobeService>();
+        services.AddSingleton<IFrameSampler, FrameSampler>();
+        services.AddSingleton<ITransitionDetector, TransitionDetector>();
+        services.AddSingleton<ICleanClipExtractor, CleanClipExtractor>();
+        services.AddSingleton<ITimelinePlanner, TimelinePlanner>();
+        services.AddSingleton<IRenderPlanBuilder, RenderPlanBuilder>();
+        services.AddSingleton<IFFmpegRenderService, FFmpegRenderService>();
+
+        // App-layer services.
+        services.AddSingleton<IDialogService, DialogService>();
+        services.AddSingleton<IThumbnailCacheService, ThumbnailCacheService>();
+        services.AddSingleton<IWorkflowNavigator, WorkflowNavigator>();
+        services.AddSingleton<WorkflowSession>();
+
+        // Shell.
+        services.AddSingleton<MainWindow>();
+        services.AddSingleton<MainWindowViewModel>();
+
+        // One workflow step = one transient ViewModel, re-created from the
+        // shared WorkflowSession on every navigation (see
+        // MainWindowViewModel.OnStepChanged).
+        services.AddTransient<WelcomeImportViewModel>();
+        services.AddTransient<AnalysisSettingsViewModel>();
+        services.AddTransient<AnalysisProgressViewModel>();
+        services.AddTransient<SceneReviewViewModel>();
+        services.AddTransient<TimelineSummaryViewModel>();
+        services.AddTransient<ExportSettingsViewModel>();
+        services.AddTransient<RenderProgressViewModel>();
+        services.AddTransient<CompletionViewModel>();
+    }
+
+    // Picked once at startup from the Windows "AppsUseLightTheme" setting -
+    // not re-evaluated while running (see docs/PHASE_10_REPORT.md, Known
+    // limitations). Every color in Themes/Styles.xaml and every View
+    // resolves through Colors.Light.xaml/Colors.Dark.xaml's shared brush
+    // keys via DynamicResource, so whichever is inserted here determines the
+    // whole application's palette consistently.
+    private static void ApplySystemColorTheme()
+    {
+        var themeUri = new Uri(
+            IsLightThemeActive() ? "Themes/Colors.Light.xaml" : "Themes/Colors.Dark.xaml",
+            UriKind.Relative);
+
+        Current.Resources.MergedDictionaries.Insert(0, new ResourceDictionary { Source = themeUri });
+    }
+
+    private static bool IsLightThemeActive()
+    {
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+            return key?.GetValue("AppsUseLightTheme") is not int value || value != 0;
+        }
+        catch (Exception ex) when (ex is SecurityException or UnauthorizedAccessException or IOException)
+        {
+            return true;
+        }
+    }
+
+    private void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
+    {
+        _serviceProvider?.GetService<IDialogService>()?.ShowError(
+            "SceneForge encountered an unexpected error",
+            e.Exception.Message);
+        e.Handled = true;
+    }
 }
