@@ -3,6 +3,7 @@ using SceneForge.App.Navigation;
 using SceneForge.App.Session;
 using SceneForge.App.Tests.TestSupport;
 using SceneForge.App.ViewModels;
+using SceneForge.Infrastructure.Persistence;
 
 namespace SceneForge.App.Tests.ViewModels;
 
@@ -32,7 +33,8 @@ public sealed class WelcomeImportViewModelTests : IDisposable
         var session = new WorkflowSession();
         var ffprobe = new FakeFfprobeService();
         ffprobe.ResultsByPath[_videoPath] = MediaInfoBuilder.Video(_videoPath, TimeSpan.FromSeconds(30));
-        var vm = new WelcomeImportViewModel(session, new FakeDialogService(), ffprobe, new WorkflowNavigator());
+        var persistence = new FakeProjectPersistenceCoordinator();
+        var vm = new WelcomeImportViewModel(session, new FakeDialogService(), ffprobe, new WorkflowNavigator(), persistence);
 
         await vm.VideoImportCommand.ExecuteAsync(_videoPath);
 
@@ -40,6 +42,7 @@ public sealed class WelcomeImportViewModelTests : IDisposable
         Assert.NotNull(session.VideoMediaInfo);
         Assert.Contains("0:30", vm.VideoSummary);
         Assert.Null(vm.ErrorMessage);
+        Assert.Contains(ProjectStage.Imported, persistence.CheckpointedStages);
     }
 
     [Fact]
@@ -48,7 +51,7 @@ public sealed class WelcomeImportViewModelTests : IDisposable
         var session = new WorkflowSession();
         var ffprobe = new FakeFfprobeService();
         ffprobe.ResultsByPath[_videoOnlyMediaPath] = MediaInfoBuilder.Audio(_videoOnlyMediaPath, TimeSpan.FromSeconds(10));
-        var vm = new WelcomeImportViewModel(session, new FakeDialogService(), ffprobe, new WorkflowNavigator());
+        var vm = new WelcomeImportViewModel(session, new FakeDialogService(), ffprobe, new WorkflowNavigator(), new FakeProjectPersistenceCoordinator());
 
         await vm.VideoImportCommand.ExecuteAsync(_videoOnlyMediaPath);
 
@@ -63,7 +66,7 @@ public sealed class WelcomeImportViewModelTests : IDisposable
         var ffprobe = new FakeFfprobeService();
         ffprobe.ResultsByPath[_videoPath] = MediaInfoBuilder.Video(_videoPath, TimeSpan.FromSeconds(30));
         ffprobe.ResultsByPath[_audioPath] = MediaInfoBuilder.Audio(_audioPath, TimeSpan.FromSeconds(30));
-        var vm = new WelcomeImportViewModel(session, new FakeDialogService(), ffprobe, new WorkflowNavigator());
+        var vm = new WelcomeImportViewModel(session, new FakeDialogService(), ffprobe, new WorkflowNavigator(), new FakeProjectPersistenceCoordinator());
 
         Assert.False(vm.ContinueCommand.CanExecute(null));
 
@@ -82,7 +85,7 @@ public sealed class WelcomeImportViewModelTests : IDisposable
         ffprobe.ResultsByPath[_videoPath] = MediaInfoBuilder.Video(_videoPath, TimeSpan.FromSeconds(30));
         ffprobe.ResultsByPath[_audioPath] = MediaInfoBuilder.Audio(_audioPath, TimeSpan.FromSeconds(30));
         var navigator = new WorkflowNavigator();
-        var vm = new WelcomeImportViewModel(session, new FakeDialogService(), ffprobe, navigator);
+        var vm = new WelcomeImportViewModel(session, new FakeDialogService(), ffprobe, navigator, new FakeProjectPersistenceCoordinator());
         await vm.VideoImportCommand.ExecuteAsync(_videoPath);
         await vm.AudioImportCommand.ExecuteAsync(_audioPath);
 
@@ -96,7 +99,7 @@ public sealed class WelcomeImportViewModelTests : IDisposable
     {
         var session = new WorkflowSession();
         var dialogService = new FakeDialogService { VideoPathToReturn = null };
-        var vm = new WelcomeImportViewModel(session, dialogService, new FakeFfprobeService(), new WorkflowNavigator());
+        var vm = new WelcomeImportViewModel(session, dialogService, new FakeFfprobeService(), new WorkflowNavigator(), new FakeProjectPersistenceCoordinator());
 
         await vm.BrowseVideoCommand.ExecuteAsync(null);
 
@@ -113,7 +116,7 @@ public sealed class WelcomeImportViewModelTests : IDisposable
             VideoMediaInfo = MediaInfoBuilder.Video(_videoPath, TimeSpan.FromSeconds(12)),
         };
 
-        var vm = new WelcomeImportViewModel(session, new FakeDialogService(), new FakeFfprobeService(), new WorkflowNavigator());
+        var vm = new WelcomeImportViewModel(session, new FakeDialogService(), new FakeFfprobeService(), new WorkflowNavigator(), new FakeProjectPersistenceCoordinator());
 
         Assert.Equal(_videoPath, vm.VideoFilePath);
         Assert.NotNull(vm.VideoSummary);

@@ -3,6 +3,7 @@ using SceneForge.App.Navigation;
 using SceneForge.App.Session;
 using SceneForge.App.Tests.TestSupport;
 using SceneForge.App.ViewModels;
+using SceneForge.Infrastructure.Persistence;
 using SceneForge.Media.Domain;
 using SceneForge.Media.Extraction;
 using SceneForge.Media.Planning;
@@ -26,7 +27,7 @@ public sealed class ExportSettingsViewModelTests : IDisposable
     {
         var session = BuildSessionWithPlan();
 
-        var vm = new ExportSettingsViewModel(session, new RenderPlanBuilder(), new FakeDialogService(), new WorkflowNavigator());
+        var vm = new ExportSettingsViewModel(session, new RenderPlanBuilder(), new FakeDialogService(), new WorkflowNavigator(), new FakeProjectPersistenceCoordinator());
 
         Assert.Equal(1920, vm.SelectedResolution.Width);
         Assert.Equal(1080, vm.SelectedResolution.Height);
@@ -40,7 +41,7 @@ public sealed class ExportSettingsViewModelTests : IDisposable
     {
         var session = BuildSessionWithPlan();
         var dialogService = new FakeDialogService { SavePathToReturn = @"C:\out\video.mp4" };
-        var vm = new ExportSettingsViewModel(session, new RenderPlanBuilder(), dialogService, new WorkflowNavigator());
+        var vm = new ExportSettingsViewModel(session, new RenderPlanBuilder(), dialogService, new WorkflowNavigator(), new FakeProjectPersistenceCoordinator());
 
         vm.BrowseOutputPathCommand.Execute(null);
 
@@ -51,7 +52,7 @@ public sealed class ExportSettingsViewModelTests : IDisposable
     public void ContinueCommand_CanExecute_RequiresOutputPath()
     {
         var session = BuildSessionWithPlan();
-        var vm = new ExportSettingsViewModel(session, new RenderPlanBuilder(), new FakeDialogService(), new WorkflowNavigator());
+        var vm = new ExportSettingsViewModel(session, new RenderPlanBuilder(), new FakeDialogService(), new WorkflowNavigator(), new FakeProjectPersistenceCoordinator());
         Assert.False(vm.ContinueCommand.CanExecute(null));
 
         vm.OutputVideoPath = @"C:\out\video.mp4";
@@ -64,7 +65,8 @@ public sealed class ExportSettingsViewModelTests : IDisposable
     {
         var session = BuildSessionWithPlan();
         var navigator = new WorkflowNavigator();
-        var vm = new ExportSettingsViewModel(session, new RenderPlanBuilder(), new FakeDialogService(), navigator)
+        var persistence = new FakeProjectPersistenceCoordinator();
+        var vm = new ExportSettingsViewModel(session, new RenderPlanBuilder(), new FakeDialogService(), navigator, persistence)
         {
             OutputVideoPath = @"C:\out\video.mp4",
         };
@@ -75,6 +77,7 @@ public sealed class ExportSettingsViewModelTests : IDisposable
         Assert.NotNull(session.RenderPlan);
         Assert.Equal(@"C:\out\video.mp4", session.OutputVideoPath);
         Assert.Equal(WorkflowStep.RenderProgress, navigator.CurrentStep);
+        Assert.Contains(ProjectStage.RenderConfigured, persistence.CheckpointedStages);
     }
 
     [Fact]
@@ -88,7 +91,7 @@ public sealed class ExportSettingsViewModelTests : IDisposable
             VideoStreams = [session.VideoMediaInfo!.VideoStreams[0] with { Duration = TimeSpan.FromSeconds(1) }],
         };
         var navigator = new WorkflowNavigator();
-        var vm = new ExportSettingsViewModel(session, new RenderPlanBuilder(), new FakeDialogService(), navigator)
+        var vm = new ExportSettingsViewModel(session, new RenderPlanBuilder(), new FakeDialogService(), navigator, new FakeProjectPersistenceCoordinator())
         {
             OutputVideoPath = @"C:\out\video.mp4",
         };

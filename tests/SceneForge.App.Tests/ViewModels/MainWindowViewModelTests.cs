@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using SceneForge.App.Navigation;
+using SceneForge.App.Persistence;
 using SceneForge.App.Services;
 using SceneForge.App.Session;
 using SceneForge.App.Tests.TestSupport;
@@ -81,6 +82,7 @@ public class MainWindowViewModelTests
         services.AddSingleton<IThumbnailCacheService, FakeThumbnailCacheService>();
         services.AddSingleton<IWorkflowNavigator, WorkflowNavigator>();
         services.AddSingleton<WorkflowSession>();
+        services.AddSingleton<IProjectPersistenceCoordinator, FakeProjectPersistenceCoordinator>();
 
         services.AddSingleton<MainWindowViewModel>();
         services.AddTransient<WelcomeImportViewModel>();

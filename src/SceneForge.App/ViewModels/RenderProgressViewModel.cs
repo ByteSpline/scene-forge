@@ -3,7 +3,9 @@ using System.IO;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using SceneForge.App.Navigation;
+using SceneForge.App.Persistence;
 using SceneForge.App.Session;
+using SceneForge.Infrastructure.Persistence;
 using SceneForge.Media.Rendering;
 
 namespace SceneForge.App.ViewModels;
@@ -18,6 +20,7 @@ public sealed partial class RenderProgressViewModel : ObservableObject, IDisposa
     private readonly WorkflowSession _session;
     private readonly IFFmpegRenderService _renderService;
     private readonly IWorkflowNavigator _navigator;
+    private readonly IProjectPersistenceCoordinator _persistence;
 
     private CancellationTokenSource? _cancellationTokenSource;
 
@@ -41,11 +44,16 @@ public sealed partial class RenderProgressViewModel : ObservableObject, IDisposa
     [ObservableProperty]
     private string? errorMessage;
 
-    public RenderProgressViewModel(WorkflowSession session, IFFmpegRenderService renderService, IWorkflowNavigator navigator)
+    public RenderProgressViewModel(
+        WorkflowSession session,
+        IFFmpegRenderService renderService,
+        IWorkflowNavigator navigator,
+        IProjectPersistenceCoordinator persistence)
     {
         _session = session;
         _renderService = renderService;
         _navigator = navigator;
+        _persistence = persistence;
 
         _ = RunCommand.ExecuteAsync(null);
     }
@@ -57,6 +65,8 @@ public sealed partial class RenderProgressViewModel : ObservableObject, IDisposa
         ErrorMessage = null;
         _cancellationTokenSource = new CancellationTokenSource();
         var cancellationToken = _cancellationTokenSource.Token;
+
+        await _persistence.BeginStageAsync(_session, ProjectStage.Completed, cancellationToken).ConfigureAwait(true);
 
         try
         {
@@ -76,6 +86,10 @@ public sealed partial class RenderProgressViewModel : ObservableObject, IDisposa
 
             var result = await _renderService.RenderAsync(plan, outputPath, progress, cancellationToken).ConfigureAwait(true);
             _session.RenderResult = result;
+
+            await _persistence.CheckpointAsync(_session, ProjectStage.Completed, cancellationToken).ConfigureAwait(true);
+            await _persistence.FinalizeAsync(cancellationToken).ConfigureAwait(true);
+
             StatusText = "Render complete.";
             _navigator.NavigateTo(WorkflowStep.Completion);
         }

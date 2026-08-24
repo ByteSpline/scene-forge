@@ -2,6 +2,7 @@ using SceneForge.App.Navigation;
 using SceneForge.App.Session;
 using SceneForge.App.Tests.TestSupport;
 using SceneForge.App.ViewModels;
+using SceneForge.Infrastructure.Persistence;
 using SceneForge.Media.Probing;
 using SceneForge.Media.Sampling;
 
@@ -27,8 +28,9 @@ public class AnalysisProgressViewModelTests
             },
         };
         var navigator = new WorkflowNavigator();
+        var persistence = new FakeProjectPersistenceCoordinator();
 
-        var vm = new AnalysisProgressViewModel(session, new FakeFfprobeService(), transitionDetector, extractor, navigator);
+        var vm = new AnalysisProgressViewModel(session, new FakeFfprobeService(), transitionDetector, extractor, navigator, persistence);
 
         Assert.False(vm.IsRunning);
         Assert.Null(vm.ErrorMessage);
@@ -38,6 +40,8 @@ public class AnalysisProgressViewModelTests
         Assert.NotNull(session.SceneRangeResult);
         Assert.NotNull(session.ExtractionResult);
         Assert.Equal(1, vm.ClipsAccepted);
+        Assert.Contains(ProjectStage.Analyzed, persistence.BegunStages);
+        Assert.Contains(ProjectStage.Analyzed, persistence.CheckpointedStages);
     }
 
     [Fact]
@@ -47,7 +51,7 @@ public class AnalysisProgressViewModelTests
         var transitionDetector = new ThrowingTransitionDetector(new FfprobeExecutionException("ffprobe exploded"));
         var navigator = new WorkflowNavigator();
 
-        var vm = new AnalysisProgressViewModel(session, new FakeFfprobeService(), transitionDetector, new FakeCleanClipExtractor(), navigator);
+        var vm = new AnalysisProgressViewModel(session, new FakeFfprobeService(), transitionDetector, new FakeCleanClipExtractor(), navigator, new FakeProjectPersistenceCoordinator());
 
         Assert.False(vm.IsRunning);
         Assert.Equal("ffprobe exploded", vm.ErrorMessage);
@@ -61,8 +65,9 @@ public class AnalysisProgressViewModelTests
         var gate = new TaskCompletionSource<bool>();
         var transitionDetector = new FakeTransitionDetector { Gate = gate };
         var navigator = new WorkflowNavigator();
+        var persistence = new FakeProjectPersistenceCoordinator();
 
-        var vm = new AnalysisProgressViewModel(session, new FakeFfprobeService(), transitionDetector, new FakeCleanClipExtractor(), navigator);
+        var vm = new AnalysisProgressViewModel(session, new FakeFfprobeService(), transitionDetector, new FakeCleanClipExtractor(), navigator, persistence);
 
         // The gate keeps DetectAsync suspended, so the constructor's
         // fire-and-forget RunCommand invocation has not completed yet.
@@ -76,6 +81,14 @@ public class AnalysisProgressViewModelTests
         Assert.False(vm.IsRunning);
         Assert.Equal("Analysis canceled.", vm.StatusText);
         Assert.Equal(WorkflowStep.WelcomeImport, navigator.CurrentStep);
+
+        // The stage was marked started (BeginStageAsync) but cancellation
+        // happened before extraction ever completed, so CheckpointAsync was
+        // never reached - the previous stage's on-disk checkpoint (if any)
+        // is retained untouched (CLAUDE.md rule 5's "retain the last valid
+        // checkpoint" - see docs/PHASE_11_REPORT.md).
+        Assert.Contains(ProjectStage.Analyzed, persistence.BegunStages);
+        Assert.DoesNotContain(ProjectStage.Analyzed, persistence.CheckpointedStages);
     }
 
     private static WorkflowSession BuildSessionReadyForAnalysis()

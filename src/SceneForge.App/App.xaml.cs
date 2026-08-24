@@ -5,9 +5,12 @@ using System.Windows.Threading;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Win32;
 using SceneForge.App.Navigation;
+using SceneForge.App.Persistence;
 using SceneForge.App.Services;
 using SceneForge.App.Session;
 using SceneForge.App.ViewModels;
+using SceneForge.Infrastructure.Logging;
+using SceneForge.Infrastructure.Persistence;
 using SceneForge.Media.Detection;
 using SceneForge.Media.Extraction;
 using SceneForge.Media.Planning;
@@ -44,6 +47,16 @@ public partial class App : Application
         var mainWindow = _serviceProvider.GetRequiredService<MainWindow>();
         MainWindow = mainWindow;
         mainWindow.Show();
+
+        // Fired only after the window is visible and this method has
+        // returned control to the dispatcher's message loop - never
+        // blocking startup itself. StartupRecoveryRunner.RunAsync awaits
+        // every I/O call (including a real ffprobe re-probe, bounded by its
+        // own RecoveryProbeTimeout) and catches everything it does not
+        // already expect, so this is safe to fire and forget (CLAUDE.md
+        // rule 5 - see StartupRecoveryRunner's remarks for why this used to
+        // block here, synchronously, before the window existed at all).
+        _ = StartupRecoveryRunner.RunAsync(_serviceProvider);
     }
 
     protected override void OnExit(ExitEventArgs e)
@@ -75,6 +88,22 @@ public partial class App : Application
         services.AddSingleton<IThumbnailCacheService, ThumbnailCacheService>();
         services.AddSingleton<IWorkflowNavigator, WorkflowNavigator>();
         services.AddSingleton<WorkflowSession>();
+
+        // Local project persistence (Phase 11) - one app-owned root under
+        // %LOCALAPPDATA%\SceneForge holds every project checkpoint, temp
+        // file, and log file this app ever writes; nothing here is a
+        // user-selected path (CLAUDE.md rule 12 only governs render output,
+        // which stays exactly as user-chosen as before - see
+        // ExportSettingsViewModel).
+        var layout = new ProjectLayout(ProjectLayout.DefaultAppDataRoot);
+        services.AddSingleton(layout);
+        services.AddSingleton<ITempFileRegistry>(new TempFileRegistry(layout.TempRoot));
+        services.AddSingleton<IAppLogger>(new RollingFileLogger(layout.LogsRoot));
+        services.AddSingleton<IProjectStore>(sp => new ProjectStore(sp.GetRequiredService<ITempFileRegistry>()));
+        services.AddSingleton<IStaleSourceDetector, StaleSourceDetector>();
+        services.AddSingleton<IAutosaveService, AutosaveService>();
+        services.AddSingleton<IProjectRecoveryService, ProjectRecoveryService>();
+        services.AddSingleton<IProjectPersistenceCoordinator, ProjectPersistenceCoordinator>();
 
         // Shell.
         services.AddSingleton<MainWindow>();
