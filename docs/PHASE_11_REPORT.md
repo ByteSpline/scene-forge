@@ -354,6 +354,117 @@ requires benchmarking *optimizations*, which this phase and this review
 pass did not make. This is stated explicitly rather than fabricating a
 before/after benchmark result for code with no benchmark harness.
 
+## Post-release fix: autosave failed on every single save (manual end-to-end QA)
+
+Manual end-to-end testing of the built app (not covered by the automated
+suite below) found that autosave failed immediately after selecting a video
+or audio file on Welcome/Import - and continued failing at every later
+autosave, including the one right after a successful 20-transition analysis
+run - with:
+
+```
+'C:\Users\<user>\AppData\Local\SceneForge\Projects\<guid>\project.sfproj.tmp-<guid>'
+is outside the app-owned temp directory
+'C:\Users\<user>\AppData\Local\SceneForge\Temp'
+and cannot be registered for cleanup.
+```
+
+### Root cause
+
+`App.xaml.cs`'s DI wiring built `IProjectStore` as
+`new ProjectStore(sp.GetRequiredService<ITempFileRegistry>())`, threading the
+app's single `ITempFileRegistry` (rooted at `ProjectLayout.TempRoot`) into
+every `AtomicFileWriter.WriteAsync` call `ProjectStore.SaveAsync` makes.
+`AtomicFileWriter` writes its temp file *beside its target* (the correct,
+standard atomic-write pattern), and every project save's target is
+`ProjectLayout.ProjectFilePath(id)`, under `ProjectsRoot`. `ProjectsRoot` and
+`TempRoot` are permanent **sibling** directories under one `AppDataRoot`
+(`ProjectLayout`) - never nested - so the temp file's full path could never
+satisfy `TempFileRegistry.EnsureWithinRoot`'s prefix check, and `Register`
+throws `InvalidOperationException` unconditionally. This was not a corner
+case: it reproduced on 100% of real project saves through the production DI
+graph.
+
+The design bug this exposes: `ITempFileRegistry` exists to track and sweep
+scratch files the app writes *directly under its own Temp root* (see
+`TempFileRegistry`'s remarks) - a single-directory-scoped allowlist by
+design. `AtomicFileWriter`'s sibling temp file is a different concern
+entirely - an implementation detail of writing *any* target path safely,
+wherever that target happens to live. Coupling the two assumed every
+`AtomicFileWriter` caller's target would fall under the registry's root,
+which was never true for `ProjectStore`, the only production caller that
+ever passed a non-null registry.
+
+This also explains why no test caught it before manual QA: every existing
+test (`ProjectStoreTests`, `AutosaveServiceTests`,
+`ProjectPersistenceCoordinatorTests`) constructed `ProjectStore` with no
+registry (`new ProjectStore()`); `App.xaml.cs`'s production wiring was the
+only place in the codebase that ever passed a real one in.
+
+### Fix applied
+
+`AtomicFileWriter.WriteAsync` no longer accepts or uses an
+`ITempFileRegistry` at all - its own sibling temp file is never checked
+against any Temp-root allowlist, full stop. `ProjectStore` no longer takes
+an `ITempFileRegistry` dependency (it never had a valid use for one).
+`App.xaml.cs` now registers `IProjectStore` as a plain `ProjectStore`.
+`ITempFileRegistry`/`TempFileRegistry` itself is unchanged and still used
+for its own actual purpose (`ProjectPersistenceCoordinator.FinalizeAsync`'s
+`CleanupAsync`, `StartupRecoveryRunner`'s `SweepOrphansAsync`). Crash safety
+for `AtomicFileWriter`'s own temp file still comes entirely from the
+write-then-atomically-replace pattern itself (CLAUDE.md rule 11/12): a
+leftover `.tmp-<guid>` file next to a target is inert, since only the real
+target path is ever read back by `ProjectStore.LoadAsync`.
+
+### Regression tests added
+
+- **`ProjectStoreTests.SaveAsync_MirrorsProductionLayoutWithSiblingTempRegistry_DoesNotThrow`**
+  (new) - recreates the exact production shape (a `ProjectLayout` with
+  sibling `ProjectsRoot`/`TempRoot`, a real `TempFileRegistry` rooted at
+  `TempRoot` alongside it) and saves a checkpoint into
+  `ProjectsRoot/<id>/project.sfproj`. Confirmed this test fails, before the
+  fix, with the exact reported `InvalidOperationException` and message; it
+  passes after the fix.
+- **`AtomicFileWriterTests.WriteAsync_TargetDirectoryIsSiblingOfUnrelatedTempRegistryRoot_DoesNotThrow`**
+  (new, replaces the removed `WriteAsync_RegistersTempFileDuringWriteAndUnregistersAfterSuccess`,
+  which exercised the now-removed registry parameter) - a target directory
+  that is a sibling of an unrelated `TempFileRegistry`'s root writes
+  successfully.
+
+### Verification (actual output)
+
+```
+$ dotnet format --verify-no-changes --no-restore
+(exit 0, no output)
+
+$ dotnet build -c Debug
+  Build succeeded.
+      0 Warning(s)
+      0 Error(s)
+
+$ dotnet test -c Debug
+Passed!  - Failed: 0, Passed: 1,   Skipped: 0,  Total: 1   - SceneForge.Core.Tests.dll
+Passed!  - Failed: 0, Passed: 29,  Skipped: 0,  Total: 29  - SceneForge.Accuracy.Tests.dll
+Passed!  - Failed: 0, Passed: 46,  Skipped: 0,  Total: 46  - SceneForge.Infrastructure.Tests.dll
+Passed!  - Failed: 0, Passed: 58,  Skipped: 0,  Total: 58  - SceneForge.App.Tests.dll
+Passed!  - Failed: 0, Passed: 474, Skipped: 10, Total: 484 - SceneForge.Media.Tests.dll
+
+$ dotnet test -c Release
+Passed!  - Failed: 0, Passed: 1,   Skipped: 0,  Total: 1   - SceneForge.Core.Tests.dll
+Passed!  - Failed: 0, Passed: 29,  Skipped: 0,  Total: 29  - SceneForge.Accuracy.Tests.dll
+Passed!  - Failed: 0, Passed: 46,  Skipped: 0,  Total: 46  - SceneForge.Infrastructure.Tests.dll
+Passed!  - Failed: 0, Passed: 58,  Skipped: 0,  Total: 58  - SceneForge.App.Tests.dll
+Passed!  - Failed: 0, Passed: 474, Skipped: 10, Total: 484 - SceneForge.Media.Tests.dll
+```
+
+Both configurations fully green, including every pre-existing Phase 11
+test. `TransitionDetectorTests.DetectAsync_ReportsProgressForEachAnalyzedFramePair`
+(the isolated, non-reproducing flake already documented earlier in this
+report) was confirmed unrelated to this change - it failed once under
+full-suite parallel load, passed in isolation both before and after this
+fix, and this fix touches no code outside `SceneForge.Infrastructure.Persistence`
+and `SceneForge.App`'s DI wiring.
+
 ## Test inventory (new this phase)
 
 **`SceneForge.Infrastructure.Tests`** (new project) — 43 tests:

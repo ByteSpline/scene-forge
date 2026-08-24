@@ -99,7 +99,7 @@ public partial class App : Application
         services.AddSingleton(layout);
         services.AddSingleton<ITempFileRegistry>(new TempFileRegistry(layout.TempRoot));
         services.AddSingleton<IAppLogger>(new RollingFileLogger(layout.LogsRoot));
-        services.AddSingleton<IProjectStore>(sp => new ProjectStore(sp.GetRequiredService<ITempFileRegistry>()));
+        services.AddSingleton<IProjectStore, ProjectStore>();
         services.AddSingleton<IStaleSourceDetector, StaleSourceDetector>();
         services.AddSingleton<IAutosaveService, AutosaveService>();
         services.AddSingleton<IProjectRecoveryService, ProjectRecoveryService>();
