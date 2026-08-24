@@ -61,11 +61,28 @@ jobs:
         run: dotnet build accuracy/SceneForge.Accuracy/SceneForge.Accuracy.csproj --configuration Release
 
       - name: Stage ffmpeg next to the accuracy tool
+        # Chocolatey's ffmpeg package is a "shared" build: ffmpeg.exe/ffprobe.exe
+        # depend on sibling DLLs (avcodec-*.dll, avutil-*.dll, etc.) living in the
+        # same directory. FfmpegToolLocator deliberately never searches PATH (see
+        # docs/PHASE_04_REPORT.md's convention), so copying just the two .exe
+        # files here - severed from those DLLs - produced a working-directory-only
+        # binary that failed to launch (fixture builds failing with exit -1). The
+        # whole source directory's .exe/.dll files have to be copied into
+        # tools/ffmpeg/ together, exactly as done for local testing throughout
+        # this project.
         run: |
           $ffmpegDir = "accuracy/SceneForge.Accuracy/bin/Release/net8.0/tools/ffmpeg"
           New-Item -ItemType Directory -Force -Path $ffmpegDir | Out-Null
-          Copy-Item (Get-Command ffmpeg).Source -Destination $ffmpegDir
-          Copy-Item (Get-Command ffprobe).Source -Destination $ffmpegDir
+
+          $ffmpegSourceDir = Split-Path -Parent (Get-Command ffmpeg).Source
+          Copy-Item "$ffmpegSourceDir\*.exe" -Destination $ffmpegDir -Force
+          Copy-Item "$ffmpegSourceDir\*.dll" -Destination $ffmpegDir -Force
+
+          $ffprobeSourceDir = Split-Path -Parent (Get-Command ffprobe).Source
+          if ($ffprobeSourceDir -ne $ffmpegSourceDir) {
+            Copy-Item "$ffprobeSourceDir\*.exe" -Destination $ffmpegDir -Force
+            Copy-Item "$ffprobeSourceDir\*.dll" -Destination $ffmpegDir -Force
+          }
 
       - name: Run regression gate
         # Correctness-only: fails the job only on a genuine
