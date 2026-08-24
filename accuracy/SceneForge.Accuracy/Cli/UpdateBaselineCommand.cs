@@ -14,7 +14,7 @@ public static class UpdateBaselineCommand
         var report = await EvaluateCommand.RunEvaluationAsync(options, cancellationToken).ConfigureAwait(false);
         ConsoleReportPrinter.Print(report);
 
-        var baseline = new RegressionBaseline(HardwareDescriber.Describe(), report);
+        var baseline = new RegressionBaseline(await HardwareDescriber.DescribeAsync(cancellationToken).ConfigureAwait(false), report);
         await RegressionBaselineJson.WriteAsync(baseline, outputPath, cancellationToken).ConfigureAwait(false);
 
         Console.WriteLine();

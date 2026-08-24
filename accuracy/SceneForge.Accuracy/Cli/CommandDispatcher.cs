@@ -3,35 +3,39 @@ namespace SceneForge.Accuracy.Cli;
 // Deliberately no CLI-parsing library (matches the repo's existing
 // zero-CLI-dependency convention - see benchmarks/SceneForge.Benchmarks's
 // one-line Program.cs, which likewise delegates entirely to a switcher
-// rather than a bespoke parser).
+// rather than a bespoke parser). Option parsing happens *inside* the try
+// block, not before it: a malformed invocation (a dangling "--flag" with
+// no value, a missing required option) must produce the same clean,
+// non-zero-exit error path as a command that fails at runtime, never an
+// unhandled-exception crash dump.
 public static class CommandDispatcher
 {
-    public static async Task<int> RunAsync(string[] args)
+    public static async Task<int> RunAsync(string[] args, CancellationToken cancellationToken)
     {
         if (args.Length == 0)
         {
             PrintUsage();
-            return 1;
+            return ExitCodeMapper.FailureExitCode;
         }
 
         var command = args[0];
-        var options = CommandLineOptions.Parse(args.Skip(1).ToArray());
 
         try
         {
+            var options = CommandLineOptions.Parse(args.Skip(1).ToArray());
+
             return command switch
             {
-                "generate" => await GenerateCommand.RunAsync(options, CancellationToken.None).ConfigureAwait(false),
-                "evaluate" => await EvaluateCommand.RunAsync(options, CancellationToken.None).ConfigureAwait(false),
-                "gate" => await GateCommand.RunAsync(options, CancellationToken.None).ConfigureAwait(false),
-                "update-baseline" => await UpdateBaselineCommand.RunAsync(options, CancellationToken.None).ConfigureAwait(false),
+                "generate" => await GenerateCommand.RunAsync(options, cancellationToken).ConfigureAwait(false),
+                "evaluate" => await EvaluateCommand.RunAsync(options, cancellationToken).ConfigureAwait(false),
+                "gate" => await GateCommand.RunAsync(options, cancellationToken).ConfigureAwait(false),
+                "update-baseline" => await UpdateBaselineCommand.RunAsync(options, cancellationToken).ConfigureAwait(false),
                 _ => Unknown(command),
             };
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex)
         {
-            Console.Error.WriteLine($"'{command}' failed: {ex.Message}");
-            return 1;
+            return ExitCodeMapper.Map(ex, command, Console.Error);
         }
     }
 
@@ -39,7 +43,7 @@ public static class CommandDispatcher
     {
         Console.Error.WriteLine($"Unknown command '{command}'.");
         PrintUsage();
-        return 1;
+        return ExitCodeMapper.FailureExitCode;
     }
 
     private static void PrintUsage()
