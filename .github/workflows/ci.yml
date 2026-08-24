@@ -35,3 +35,49 @@ jobs:
 
       - name: Verify formatting
         run: dotnet format SceneForge.sln --verify-no-changes
+
+  accuracy-regression:
+    name: Accuracy regression gate
+    runs-on: windows-latest
+
+    # Deliberately a separate job from build-and-test: this is the one place
+    # in CI that installs real ffmpeg (every other test/job stays exactly as
+    # documented - "real ffmpeg is never present in CI" - see
+    # RealFfmpegAvailability's own remarks), so a slow or flaky ffmpeg
+    # install can never block the main build/test gate.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Install ffmpeg
+        run: choco install ffmpeg -y --no-progress
+
+      - name: Build accuracy tool
+        run: dotnet build accuracy/SceneForge.Accuracy/SceneForge.Accuracy.csproj --configuration Release
+
+      - name: Stage ffmpeg next to the accuracy tool
+        run: |
+          $ffmpegDir = "accuracy/SceneForge.Accuracy/bin/Release/net8.0/tools/ffmpeg"
+          New-Item -ItemType Directory -Force -Path $ffmpegDir | Out-Null
+          Copy-Item (Get-Command ffmpeg).Source -Destination $ffmpegDir
+          Copy-Item (Get-Command ffprobe).Source -Destination $ffmpegDir
+
+      - name: Run regression gate
+        # Correctness-only: fails the job only on a genuine
+        # precision/recall/F1/boundary-error/false-positives-per-minute
+        # regression vs. the committed baseline. Resource/throughput
+        # numbers are always reported (in the console log and the uploaded
+        # report) but never fail this step - see RegressionGate's remarks.
+        run: dotnet run --project accuracy/SceneForge.Accuracy --configuration Release --no-build -- gate --baseline accuracy/SceneForge.Accuracy/Baselines/regression-baseline.json --report accuracy-report.json
+
+      - name: Upload evaluation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: accuracy-report
+          path: accuracy-report.json

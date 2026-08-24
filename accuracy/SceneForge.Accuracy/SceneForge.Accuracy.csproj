@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="OpenCvSharp4" ExcludeAssets="analyzers" />
+    <PackageReference Include="OpenCvSharp4.runtime.win" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\SceneForge.Core\SceneForge.Core.csproj" />
+    <ProjectReference Include="..\..\src\SceneForge.Media\SceneForge.Media.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="Baselines\**" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

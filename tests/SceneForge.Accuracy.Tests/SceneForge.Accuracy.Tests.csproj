@@ -12,9 +12,6 @@
     <PackageReference Include="Microsoft.NET.Test.Sdk" />
     <PackageReference Include="xunit" />
     <PackageReference Include="xunit.runner.visualstudio" />
-    <PackageReference Include="Xunit.SkippableFact" />
-    <PackageReference Include="OpenCvSharp4" ExcludeAssets="analyzers" />
-    <PackageReference Include="OpenCvSharp4.runtime.win" />
   </ItemGroup>
 
   <ItemGroup>
@@ -22,12 +19,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\SceneForge.Media\SceneForge.Media.csproj" />
     <ProjectReference Include="..\..\accuracy\SceneForge.Accuracy\SceneForge.Accuracy.csproj" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <None Include="Fixtures\**" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

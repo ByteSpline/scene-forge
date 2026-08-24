@@ -1,3 +1,4 @@
+using SceneForge.Accuracy.Fixtures;
 using SceneForge.Media.Detection;
 using SceneForge.Media.Detection.Fusion;
 using SceneForge.Media.Domain;
@@ -11,15 +12,19 @@ using Xunit.Abstractions;
 namespace SceneForge.Media.Tests.Detection.Fixtures;
 
 // End-to-end: real ffmpeg generates deterministic clips with exactly-known
-// transition windows (see SyntheticVideoFixtureBuilder), the real
-// TransitionDetector pipeline (real FrameSampler/FfprobeService/ffmpeg
-// decode, not fakes) analyzes them, and precision/recall/boundary-error are
-// computed per transition type across >= 2 independent base-content
-// variants each - never tuned against, or validated against, only one
-// video (a repository requirement). Real ffmpeg is never present in CI
-// (see RealFfmpegAvailability), so this always skips there; it is exercised
-// locally with the binaries temporarily copied into tools/ffmpeg, same
-// procedure as the existing Sampling/Probing integration tests.
+// transition windows (see SceneForge.Accuracy.Fixtures.SyntheticFixtureCatalog,
+// the shared source of truth also used by the accuracy/benchmark console
+// tool), the real TransitionDetector pipeline (real FrameSampler/
+// FfprobeService/ffmpeg decode, not fakes) analyzes them, and precision/
+// recall/boundary-error are computed per transition type across >= 2
+// independent base-content variants each - never tuned against, or
+// validated against, only one video (a repository requirement). This test
+// stays scoped to the 8 core transition types (the accuracy console tool's
+// own CI job is the authority for the full distractor/format-robustness
+// matrix). Real ffmpeg is never present in CI (see RealFfmpegAvailability),
+// so this always skips there; it is exercised locally with the binaries
+// temporarily copied into tools/ffmpeg, same procedure as the existing
+// Sampling/Probing integration tests.
 public class TransitionDetectorFixtureTests
 {
     private readonly ITestOutputHelper _output;
@@ -37,8 +42,8 @@ public class TransitionDetectorFixtureTests
         var workingDirectory = Directory.CreateTempSubdirectory("sceneforge-fixtures");
         try
         {
-            var builder = new SyntheticVideoFixtureBuilder(RealFfmpegAvailability.FfmpegPath, workingDirectory.FullName);
-            var fixtures = await BuildAllFixturesAsync(builder, CancellationToken.None);
+            var catalog = new SyntheticFixtureCatalog(RealFfmpegAvailability.FfmpegPath, workingDirectory.FullName);
+            var fixtures = await BuildAllFixturesAsync(catalog, CancellationToken.None);
 
             var detector = CreateRealDetector();
             var options = TransitionDetectionOptions.ForProfile(AnalysisProfile.Accurate);
@@ -144,18 +149,19 @@ public class TransitionDetectorFixtureTests
 
     private static TimeSpan Abs(TimeSpan value) => value < TimeSpan.Zero ? -value : value;
 
-    private static async Task<List<SyntheticFixture>> BuildAllFixturesAsync(SyntheticVideoFixtureBuilder builder, CancellationToken cancellationToken)
+    private static async Task<List<SyntheticFixture>> BuildAllFixturesAsync(SyntheticFixtureCatalog catalog, CancellationToken cancellationToken)
     {
         var fixtures = new List<SyntheticFixture>();
         for (var variant = 0; variant < 2; variant++)
         {
-            fixtures.Add(await builder.BuildHardCutAsync(variant, cancellationToken));
-            fixtures.Add(await builder.BuildDissolveAsync(variant, cancellationToken));
-            fixtures.Add(await builder.BuildFadeBlackPairAsync(variant, cancellationToken));
-            fixtures.Add(await builder.BuildFlashAsync(variant, cancellationToken));
-            fixtures.Add(await builder.BuildBlurTransitionAsync(variant, cancellationToken));
-            fixtures.Add(await builder.BuildDirectionalSwipeAsync(variant, cancellationToken));
-            fixtures.Add(await builder.BuildZoomTransitionAsync(variant, cancellationToken));
+            fixtures.Add(await catalog.BuildHardCutAsync(variant, cancellationToken));
+            fixtures.Add(await catalog.BuildDissolveAsync(variant, cancellationToken));
+            fixtures.Add(await catalog.BuildFadeToBlackAsync(variant, cancellationToken));
+            fixtures.Add(await catalog.BuildFadeFromBlackAsync(variant, cancellationToken));
+            fixtures.Add(await catalog.BuildFlashAsync(variant, cancellationToken));
+            fixtures.Add(await catalog.BuildBlurTransitionAsync(variant, cancellationToken));
+            fixtures.Add(await catalog.BuildDirectionalSwipeAsync(variant, cancellationToken));
+            fixtures.Add(await catalog.BuildZoomTransitionAsync(variant, cancellationToken));
         }
 
         return fixtures;
