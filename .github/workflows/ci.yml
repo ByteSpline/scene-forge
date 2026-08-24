@@ -75,17 +75,80 @@ jobs:
       - name: Stage ffmpeg next to the accuracy tool
         # `ffmpeg`/`ffprobe` on PATH after `choco install` resolve to shims
         # under C:\ProgramData\chocolatey\bin - tiny launcher stubs, not the
-        # real binaries, with no DLLs beside them. Resolving via Get-Command
-        # (as a prior version of this step did) copies the shim alone,
-        # severed from the DLLs it needs, so it fails to launch (fixture
-        # builds failing with exit -1). FfmpegToolLocator deliberately never
-        # searches PATH (see docs/PHASE_04_REPORT.md's convention), so this
-        # step does not rely on PATH resolution either: it searches
-        # C:\ProgramData\chocolatey\lib directly for the real ffmpeg.exe -
-        # identified by having an avcodec-*.dll next to it, since the exact
-        # versioned subfolder Chocolatey unpacks it into is not something to
-        # hardcode - and copies that directory's .exe/.dll files together.
+        # real binaries. FfmpegToolLocator deliberately never searches PATH
+        # (see docs/PHASE_04_REPORT.md's convention), so this step resolves
+        # the real binaries directly under C:\ProgramData\chocolatey\lib
+        # instead - handling both packaging shapes Chocolatey's ffmpeg
+        # package has been observed to use:
+        #   1. A self-contained (statically linked) build: the exe runs
+        #      standalone, no DLLs needed beside it at all. Detected by
+        #      actually launching each candidate with `-version` and
+        #      checking for exit code 0 - not by guessing from file layout.
+        #   2. A "shared" build: the exe needs sibling DLLs (avcodec-*.dll
+        #      etc.), which may or may not live in the very same folder the
+        #      exe itself was found in - so on this path the whole ffmpeg
+        #      package tree is searched for a folder that actually holds
+        #      both the exe and an avcodec-*.dll together.
+        # ffmpeg.exe and ffprobe.exe are resolved independently (same
+        # two-case logic for each), since nothing here should assume they
+        # necessarily end up in the same folder.
         run: |
+          function Resolve-RealFfmpegBinaryDirectory {
+            param(
+              [string]$ExeName,
+              [string]$ChocoLib
+            )
+
+            $candidates = @(Get-ChildItem -Path $ChocoLib -Recurse -Filter $ExeName -ErrorAction SilentlyContinue)
+            Write-Host "Found $($candidates.Count) candidate $ExeName file(s) under $ChocoLib`:"
+            $candidates | ForEach-Object { Write-Host "  $($_.FullName)" }
+
+            if ($candidates.Count -eq 0) {
+              return $null
+            }
+
+            Write-Host "Case 1: probing each candidate to see if it runs standalone (a self-contained static build)..."
+            foreach ($candidate in $candidates) {
+              Write-Host "  Probing $($candidate.FullName) -version ..."
+              $probeExitCode = -1
+              try {
+                & $candidate.FullName -version *> $null
+                $probeExitCode = $LASTEXITCODE
+              } catch {
+                Write-Host "    -> failed to launch: $($_.Exception.Message)"
+                continue
+              }
+
+              if ($probeExitCode -eq 0) {
+                Write-Host "    -> exit 0: self-contained static build, using as-is."
+                return $candidate.DirectoryName
+              }
+
+              Write-Host "    -> exit $probeExitCode (not runnable standalone - likely needs a sibling DLL)."
+            }
+
+            Write-Host "Case 2: no candidate ran standalone - searching the ffmpeg package tree for a folder containing both $ExeName and avcodec-*.dll together..."
+            $packageRoot = Join-Path $ChocoLib "ffmpeg"
+            if (-not (Test-Path $packageRoot)) {
+              Write-Host "  ($packageRoot not found - falling back to searching all of $ChocoLib)"
+              $packageRoot = $ChocoLib
+            }
+
+            $dllCandidates = @(Get-ChildItem -Path $packageRoot -Recurse -Filter "avcodec-*.dll" -ErrorAction SilentlyContinue)
+            Write-Host "  Found $($dllCandidates.Count) avcodec-*.dll file(s) under $packageRoot`:"
+            $dllCandidates | ForEach-Object { Write-Host "    $($_.FullName)" }
+
+            foreach ($dll in $dllCandidates) {
+              $dllDir = $dll.DirectoryName
+              if (Test-Path (Join-Path $dllDir $ExeName)) {
+                Write-Host "  -> matched: $dllDir contains both $ExeName and avcodec-*.dll."
+                return $dllDir
+              }
+            }
+
+            return $null
+          }
+
           $ffmpegDir = "accuracy/SceneForge.Accuracy/bin/Release/net8.0/tools/ffmpeg"
           New-Item -ItemType Directory -Force -Path $ffmpegDir | Out-Null
 
@@ -94,36 +157,43 @@ jobs:
             $chocolateyRoot = "C:\ProgramData\chocolatey"
           }
           $chocoLib = Join-Path $chocolateyRoot "lib"
-          Write-Host "Searching for the real ffmpeg.exe under: $chocoLib"
+          Write-Host "Searching for the real ffmpeg/ffprobe binaries under: $chocoLib"
 
-          $candidates = @(Get-ChildItem -Path $chocoLib -Recurse -Filter "ffmpeg.exe" -ErrorAction SilentlyContinue)
-          Write-Host "Found $($candidates.Count) candidate ffmpeg.exe file(s):"
-          $candidates | ForEach-Object { Write-Host "  $($_.FullName)" }
-
-          $realCandidates = @($candidates | Where-Object {
-            @(Get-ChildItem -Path $_.DirectoryName -Filter "avcodec-*.dll" -ErrorAction SilentlyContinue).Count -gt 0
-          })
-          Write-Host "Of those, $($realCandidates.Count) have a sibling avcodec-*.dll (i.e. are the real binary, not a shim):"
-          $realCandidates | ForEach-Object { Write-Host "  $($_.FullName)" }
-
-          if ($realCandidates.Count -eq 0) {
-            Write-Error "Could not find a real ffmpeg.exe (with a sibling avcodec-*.dll) under $chocoLib. See the 'Inspect Chocolatey ffmpeg install' step's log above for what Chocolatey actually installed."
+          Write-Host "--- Resolving ffmpeg.exe ---"
+          $ffmpegRealDir = Resolve-RealFfmpegBinaryDirectory -ExeName "ffmpeg.exe" -ChocoLib $chocoLib
+          if (-not $ffmpegRealDir) {
+            Write-Error "Could not resolve a working ffmpeg.exe (neither standalone nor paired with avcodec-*.dll) under $chocoLib. See the 'Inspect Chocolatey ffmpeg install' step's log above for what Chocolatey actually installed."
             exit 1
           }
+          Write-Host "Resolved ffmpeg.exe source directory: $ffmpegRealDir"
 
-          $realDir = $realCandidates[0].DirectoryName
-          Write-Host "Resolved real ffmpeg binary directory: $realDir"
+          Write-Host "--- Resolving ffprobe.exe ---"
+          $ffprobeRealDir = Resolve-RealFfmpegBinaryDirectory -ExeName "ffprobe.exe" -ChocoLib $chocoLib
+          if (-not $ffprobeRealDir) {
+            Write-Error "Could not resolve a working ffprobe.exe (neither standalone nor paired with avcodec-*.dll) under $chocoLib. See the 'Inspect Chocolatey ffmpeg install' step's log above for what Chocolatey actually installed."
+            exit 1
+          }
+          Write-Host "Resolved ffprobe.exe source directory: $ffprobeRealDir"
 
-          $exeFiles = @(Get-ChildItem -Path $realDir -Filter "*.exe")
-          $dllFiles = @(Get-ChildItem -Path $realDir -Filter "*.dll")
-          Write-Host "Copying $($exeFiles.Count) .exe file(s) and $($dllFiles.Count) .dll file(s) into $ffmpegDir"
-          Copy-Item -Path $exeFiles.FullName -Destination $ffmpegDir -Force
-          Copy-Item -Path $dllFiles.FullName -Destination $ffmpegDir -Force
+          $sourceDirs = @(@($ffmpegRealDir, $ffprobeRealDir) | Select-Object -Unique)
+          Write-Host "Copying from $($sourceDirs.Count) distinct source directory(ies): $($sourceDirs -join ', ')"
+
+          foreach ($dir in $sourceDirs) {
+            $exeFiles = @(Get-ChildItem -Path $dir -Filter "*.exe")
+            $dllFiles = @(Get-ChildItem -Path $dir -Filter "*.dll")
+            Write-Host "  $($dir): copying $($exeFiles.Count) .exe file(s) and $($dllFiles.Count) .dll file(s)"
+            if ($exeFiles.Count -gt 0) {
+              Copy-Item -Path $exeFiles.FullName -Destination $ffmpegDir -Force
+            }
+            if ($dllFiles.Count -gt 0) {
+              Copy-Item -Path $dllFiles.FullName -Destination $ffmpegDir -Force
+            }
+          }
 
           $stagedFfmpeg = Join-Path $ffmpegDir "ffmpeg.exe"
           $stagedFfprobe = Join-Path $ffmpegDir "ffprobe.exe"
           if (-not (Test-Path $stagedFfmpeg) -or -not (Test-Path $stagedFfprobe)) {
-            Write-Error "Staging failed: ffmpeg.exe and/or ffprobe.exe missing from $ffmpegDir after copy (source directory was $realDir)."
+            Write-Error "Staging failed: ffmpeg.exe and/or ffprobe.exe missing from $ffmpegDir after copy (ffmpeg source: $ffmpegRealDir, ffprobe source: $ffprobeRealDir)."
             exit 1
           }
 
