@@ -64,10 +64,47 @@ public sealed class TempFileRegistryTests : IDisposable
         File.WriteAllText(registeredPath, "kept");
         registry.Register(registeredPath);
 
-        await registry.SweepOrphansAsync();
+        // TimeSpan.Zero disables the age guard (see the two tests below for
+        // that guard's own behavior) so this test still exercises plain
+        // "unregistered vs. registered" selection on its own.
+        await registry.SweepOrphansAsync(TimeSpan.Zero);
 
         Assert.False(File.Exists(orphanPath));
         Assert.True(File.Exists(registeredPath));
+    }
+
+    [Fact]
+    public async Task SweepOrphansAsync_DefaultAgeGuard_DoesNotDeleteARecentlyWrittenUnregisteredFile()
+    {
+        // Regression test (release review): nothing in SceneForge.App
+        // enforces single-instance operation, so a second, concurrently
+        // running instance could register and start writing a temp file
+        // this instance's in-memory manifest has no way to know about yet.
+        // Without a minimum age, that file - unregistered from THIS
+        // instance's point of view - would look identical to genuine
+        // leftover crash debris and be deleted out from under the other,
+        // still-running instance. The default sweep must leave a
+        // just-created, unregistered file alone.
+        var registry = new TempFileRegistry(_fixture.Path);
+        var recentOrphanPath = Path.Combine(_fixture.Path, "recent-orphan.dat");
+        File.WriteAllText(recentOrphanPath, "possibly still in use by another process");
+
+        await registry.SweepOrphansAsync();
+
+        Assert.True(File.Exists(recentOrphanPath));
+    }
+
+    [Fact]
+    public async Task SweepOrphansAsync_DefaultAgeGuard_DeletesAnUnregisteredFileOlderThanTheGuard()
+    {
+        var registry = new TempFileRegistry(_fixture.Path);
+        var staleOrphanPath = Path.Combine(_fixture.Path, "stale-orphan.dat");
+        File.WriteAllText(staleOrphanPath, "genuinely abandoned");
+        File.SetLastWriteTimeUtc(staleOrphanPath, DateTime.UtcNow - TempFileRegistry.DefaultMinimumOrphanAge - TimeSpan.FromMinutes(1));
+
+        await registry.SweepOrphansAsync();
+
+        Assert.False(File.Exists(staleOrphanPath));
     }
 
     [Fact]

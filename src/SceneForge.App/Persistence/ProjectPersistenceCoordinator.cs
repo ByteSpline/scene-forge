@@ -86,11 +86,15 @@ public sealed class ProjectPersistenceCoordinator : IProjectPersistenceCoordinat
                 var existing = await _projectStore.LoadAsync(projectFilePath, cancellationToken).ConfigureAwait(false);
                 createdUtc = existing.CreatedUtc;
             }
-            catch (ProjectPersistenceException)
+            catch (ProjectPersistenceException ex)
             {
                 // The prior checkpoint is unreadable - treat this save as
                 // starting a fresh CreatedUtc rather than failing the
-                // checkpoint entirely.
+                // checkpoint entirely, but this is still worth a diagnostic
+                // trail: a project's CreatedUtc silently resetting is
+                // exactly the kind of thing CLAUDE.md rule 10 ("never
+                // silent") means to catch.
+                _logger.Log(LogLevel.Warning, $"Could not read the existing checkpoint for project {session.ProjectId} to preserve its CreatedUtc; using a new one instead.", ex);
             }
         }
 

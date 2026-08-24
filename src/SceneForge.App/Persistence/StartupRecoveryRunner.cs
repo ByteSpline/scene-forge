@@ -12,12 +12,23 @@ using SceneForge.Media.Validation;
 
 namespace SceneForge.App.Persistence;
 
-// Runs once at startup (see App.OnStartup), before the shell window is
-// shown: sweeps any orphaned app-owned temp file left by a process that
-// died before it could clean up after itself (CLAUDE.md rule 11), then
-// offers to resume any project whose in-progress marker was never cleared
-// by a matching AutosaveService.CompleteStageAsync call - i.e. the previous
-// run did not shut down cleanly while working on it.
+// Runs once at startup (see App.OnStartup, which schedules RunAsync onto the
+// Dispatcher AFTER the shell window is already shown and its message loop is
+// pumping - never before, and never blocking the thread that owns that loop):
+// sweeps any orphaned app-owned temp file left by a process that died before
+// it could clean up after itself (CLAUDE.md rule 11), then offers to resume
+// any project whose in-progress marker was never cleared by a matching
+// AutosaveService.CompleteStageAsync call - i.e. the previous run did not
+// shut down cleanly while working on it.
+//
+// Every I/O call in here - including the one real child-process invocation,
+// IFfprobeService.ProbeAsync - is awaited (never `.GetAwaiter().GetResult()`
+// blocking a thread the UI depends on) and threaded with a genuine,
+// externally-cancellable CancellationToken bounded by RecoveryProbeTimeout,
+// independent of whatever internal default timeout FfprobeService itself
+// happens to have (CLAUDE.md rule 5 - a long-running, potentially-blocking
+// operation must support cooperative cancellation, not merely "eventually
+// stop on its own").
 //
 // A resumed project always lands on Welcome/Import, never jumps straight
 // into the middle of the eight-screen workflow: the persisted schema
@@ -33,14 +44,42 @@ namespace SceneForge.App.Persistence;
 // Welcome/Import without re-picking anything.
 public static class StartupRecoveryRunner
 {
-    public static void Run(IServiceProvider serviceProvider)
+    // Bounds each recovery-time re-probe independently of FfprobeService's
+    // own internal default (currently 30s) - a deliberately shorter,
+    // App-layer-owned bound, since this runs as background work after the
+    // window is already visible and a slow/hung probe here should give up
+    // and fall back to "please re-import" well before a user would
+    // reasonably wait on it.
+    public static readonly TimeSpan RecoveryProbeTimeout = TimeSpan.FromSeconds(20);
+
+    public static async Task RunAsync(IServiceProvider serviceProvider, CancellationToken cancellationToken = default)
     {
-        var tempFileRegistry = serviceProvider.GetRequiredService<ITempFileRegistry>();
         var logger = serviceProvider.GetRequiredService<IAppLogger>();
 
         try
         {
-            tempFileRegistry.SweepOrphansAsync().GetAwaiter().GetResult();
+            await RunCoreAsync(serviceProvider, logger, cancellationToken).ConfigureAwait(true);
+        }
+        catch (Exception ex)
+        {
+            // This runs fire-and-forget from App.OnStartup (see that
+            // method's remarks) with no other error surface - an
+            // unanticipated failure anywhere in this method must never
+            // propagate as an unobserved exception that could tear down the
+            // process. Every failure this method already expects is caught
+            // more specifically, and logged more specifically, below; this
+            // is only the last-resort safety net.
+            logger.Log(LogLevel.Error, "Startup project recovery failed unexpectedly.", ex);
+        }
+    }
+
+    private static async Task RunCoreAsync(IServiceProvider serviceProvider, IAppLogger logger, CancellationToken cancellationToken)
+    {
+        var tempFileRegistry = serviceProvider.GetRequiredService<ITempFileRegistry>();
+
+        try
+        {
+            await tempFileRegistry.SweepOrphansAsync(cancellationToken).ConfigureAwait(true);
         }
         catch (Exception ex) when (IsRecognizedIoFailure(ex))
         {
@@ -52,7 +91,7 @@ public static class StartupRecoveryRunner
         IReadOnlyList<RecoverableProject> recoverableProjects;
         try
         {
-            recoverableProjects = recoveryService.ScanForInterruptedProjectsAsync().GetAwaiter().GetResult();
+            recoverableProjects = await recoveryService.ScanForInterruptedProjectsAsync(cancellationToken).ConfigureAwait(true);
         }
         catch (Exception ex) when (IsRecognizedIoFailure(ex))
         {
@@ -75,7 +114,7 @@ public static class StartupRecoveryRunner
         {
             if (!OfferRecovery(project, dialogService))
             {
-                recoveryService.DiscardAsync(project.ProjectId).GetAwaiter().GetResult();
+                await recoveryService.DiscardAsync(project.ProjectId, cancellationToken).ConfigureAwait(true);
                 continue;
             }
 
@@ -84,13 +123,13 @@ public static class StartupRecoveryRunner
                 // Interrupted before its very first checkpoint - nothing to
                 // actually restore into the session; just clear the marker
                 // so this project stops being reported every startup.
-                recoveryService.DiscardAsync(project.ProjectId).GetAwaiter().GetResult();
+                await recoveryService.DiscardAsync(project.ProjectId, cancellationToken).ConfigureAwait(true);
                 continue;
             }
 
-            ApplyCheckpointToSession(checkpoint, session, staleSourceDetector, ffprobeService, dialogService, logger);
+            await ApplyCheckpointToSessionAsync(checkpoint, session, staleSourceDetector, ffprobeService, dialogService, logger, cancellationToken).ConfigureAwait(true);
             session.ProjectId = project.ProjectId;
-            recoveryService.DiscardAsync(project.ProjectId).GetAwaiter().GetResult();
+            await recoveryService.DiscardAsync(project.ProjectId, cancellationToken).ConfigureAwait(true);
             navigator.Reset();
 
             // WorkflowSession holds exactly one active project - once one
@@ -116,13 +155,14 @@ public static class StartupRecoveryRunner
             $"{description}\n\nResume it now (you will return to Welcome/Import with your source files and settings restored), or discard and start fresh?");
     }
 
-    private static void ApplyCheckpointToSession(
+    internal static async Task ApplyCheckpointToSessionAsync(
         SceneForgeProjectDocument checkpoint,
         WorkflowSession session,
         IStaleSourceDetector staleSourceDetector,
         IFfprobeService ffprobeService,
         IDialogService dialogService,
-        IAppLogger logger)
+        IAppLogger logger,
+        CancellationToken cancellationToken)
     {
         session.AnalysisProfile = checkpoint.AnalysisProfile ?? session.AnalysisProfile;
         session.OutputFrameRate = checkpoint.OutputFrameRate ?? session.OutputFrameRate;
@@ -136,7 +176,7 @@ public static class StartupRecoveryRunner
             session.OutputVideoPath = renderSettings.OutputVideoPath;
         }
 
-        RestoreSourceIfFresh(
+        await RestoreSourceIfFreshAsync(
             checkpoint.VideoSource,
             "source video",
             staleSourceDetector,
@@ -144,11 +184,12 @@ public static class StartupRecoveryRunner
             dialogService,
             logger,
             path => session.VideoFilePath = path,
-            info => session.VideoMediaInfo = info);
+            info => session.VideoMediaInfo = info,
+            cancellationToken).ConfigureAwait(true);
 
         if (checkpoint.AudioSource is { } audioSource)
         {
-            RestoreSourceIfFresh(
+            await RestoreSourceIfFreshAsync(
                 audioSource,
                 "background audio track",
                 staleSourceDetector,
@@ -156,11 +197,12 @@ public static class StartupRecoveryRunner
                 dialogService,
                 logger,
                 path => session.AudioFilePath = path,
-                info => session.AudioMediaInfo = info);
+                info => session.AudioMediaInfo = info,
+                cancellationToken).ConfigureAwait(true);
         }
     }
 
-    private static void RestoreSourceIfFresh(
+    internal static async Task RestoreSourceIfFreshAsync(
         SourceFingerprint fingerprint,
         string sourceDescription,
         IStaleSourceDetector staleSourceDetector,
@@ -168,7 +210,9 @@ public static class StartupRecoveryRunner
         IDialogService dialogService,
         IAppLogger logger,
         Action<string> setPath,
-        Action<Media.Domain.MediaInfo> setMediaInfo)
+        Action<Media.Domain.MediaInfo> setMediaInfo,
+        CancellationToken cancellationToken,
+        TimeSpan? probeTimeout = null)
     {
         var freshness = staleSourceDetector.CheckFreshness(fingerprint);
         if (freshness.Status != SourceFreshnessStatus.Fresh)
@@ -181,10 +225,21 @@ public static class StartupRecoveryRunner
 
         setPath(fingerprint.FilePath);
 
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(probeTimeout ?? RecoveryProbeTimeout);
+
         try
         {
-            var info = ffprobeService.ProbeAsync(fingerprint.FilePath, CancellationToken.None).GetAwaiter().GetResult();
+            var info = await ffprobeService.ProbeAsync(fingerprint.FilePath, timeoutCts.Token).ConfigureAwait(true);
             setMediaInfo(info);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            // Our own RecoveryProbeTimeout fired, not the caller's token -
+            // a slow/stalled probe during startup recovery degrades to
+            // "please re-import," never an unhandled exception or an
+            // indefinite wait.
+            logger.Log(LogLevel.Warning, $"Re-probing recovered {sourceDescription} '{fingerprint.FilePath}' did not finish within {probeTimeout ?? RecoveryProbeTimeout}; leaving it unset.");
         }
         catch (Exception ex) when (IsRecognizedProbeFailure(ex))
         {

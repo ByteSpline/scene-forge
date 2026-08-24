@@ -85,8 +85,29 @@ public sealed class TempFileRegistry : ITempFileRegistry
         return Task.CompletedTask;
     }
 
-    public Task SweepOrphansAsync(CancellationToken cancellationToken = default)
+    // Default grace period below. Nothing enforces single-instance
+    // operation anywhere in SceneForge.App - two instances could share this
+    // same app-owned root at once, each with its own in-memory manifest.
+    // Without a minimum age, one instance's startup sweep could delete a
+    // temp file the OTHER instance registered a moment ago but this
+    // instance's manifest (loaded at ITS OWN construction time) does not
+    // yet know about - e.g. an AtomicFileWriter ".tmp-<guid>" file the other
+    // instance is actively writing to. A file has to sit unregistered for
+    // at least MinimumOrphanAge before it is treated as abandoned rather
+    // than "possibly still in use by a process this instance doesn't know
+    // about," which trades a slightly later cleanup for never deleting a
+    // file another live process still needs (CLAUDE.md rule 11's "preserve
+    // user files" extends to "never destroy another process's in-flight
+    // work").
+    public static readonly TimeSpan DefaultMinimumOrphanAge = TimeSpan.FromMinutes(2);
+
+    public Task SweepOrphansAsync(CancellationToken cancellationToken = default) =>
+        SweepOrphansAsync(DefaultMinimumOrphanAge, cancellationToken);
+
+    public Task SweepOrphansAsync(TimeSpan minimumOrphanAge, CancellationToken cancellationToken = default)
     {
+        var cutoffUtc = DateTime.UtcNow - minimumOrphanAge;
+
         lock (_lock)
         {
             foreach (var path in Directory.EnumerateFiles(RootDirectory))
@@ -99,10 +120,18 @@ public sealed class TempFileRegistry : ITempFileRegistry
                     continue;
                 }
 
-                if (!_files.Contains(fullPath))
+                if (_files.Contains(fullPath))
                 {
-                    DeleteIfWithinRoot(fullPath);
+                    continue;
                 }
+
+                var info = new FileInfo(fullPath);
+                if (!info.Exists || info.LastWriteTimeUtc > cutoffUtc)
+                {
+                    continue;
+                }
+
+                DeleteIfWithinRoot(fullPath);
             }
         }
 

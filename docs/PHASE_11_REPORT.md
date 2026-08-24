@@ -261,6 +261,99 @@ gave no visible reason to suspect its JSON behavior was broken), the second
 by a stress-style rotation test, and the third by the formatting gate
 CLAUDE.md rule 13 requires.
 
+## Release review (strict audit)
+
+A separate, adversarial pass was run after the section above was written -
+re-reading the actual diff against `ce749e9` (the Phase 10 merge commit)
+rather than trusting this report's own claims, re-running build/tests from
+a clean invocation, and specifically hunting for web dependencies, unbounded
+memory/concurrency, UI-thread work, unsafe process invocation, timing
+drift, silent fallback, missing cancellation, unverifiable claims, and
+packaging omissions. Three real issues were found and fixed; the rest of
+the checklist came back clean, with evidence recorded below rather than
+asserted.
+
+### Findings
+
+| Severity | Finding | Evidence |
+|---|---|---|
+| **Blocker** | `App.OnStartup` called `StartupRecoveryRunner.Run(_serviceProvider)` *before* creating or showing `MainWindow`, and that method ran entirely synchronously via `.GetAwaiter().GetResult()` - including a real `IFfprobeService.ProbeAsync` child-process invocation passed `CancellationToken.None`. This blocks the thread that becomes the UI thread, with no user-facing cancellation path, for as long as re-probing a recovered project's source(s) takes (bounded by `FfprobeService`'s own internal 30s default, so not an infinite hang, but up to ~30-60s of a frozen, windowless launch with zero affordance) - a direct violation of CLAUDE.md rule 5 ("every long-running or potentially blocking operation must support async cancellation and cooperative shutdown") in a code path this very phase introduced. | `grep -n "GetAwaiter\|CancellationToken.None" src/SceneForge.App/Persistence/StartupRecoveryRunner.cs` showed six `.GetAwaiter().GetResult()` calls, including `ffprobeService.ProbeAsync(fingerprint.FilePath, CancellationToken.None).GetAwaiter().GetResult()`; `App.xaml.cs` showed `StartupRecoveryRunner.Run(_serviceProvider);` on the line immediately before `_serviceProvider.GetRequiredService<MainWindow>()`/`mainWindow.Show()`. |
+| **Major** | `TempFileRegistry.SweepOrphansAsync` deleted any file directly under its app-owned root that was not in its own in-memory manifest, with no minimum age. Nothing in `SceneForge.App` enforces single-instance operation, so a second, concurrently launched instance's startup sweep could delete a file a still-running first instance had just started writing (e.g. an `AtomicFileWriter` `.tmp-<guid>` file) before that first instance's manifest entry was ever visible to the second instance's freshly-loaded copy - a real cross-process data-loss risk for the plausible scenario of a user double-launching the app. | Code inspection of `TempFileRegistry.SweepOrphansAsync`/`DeleteIfWithinRoot`: no age check anywhere before deletion; confirmed no single-instance guard exists anywhere under `src/SceneForge.App` (`grep -rn "Mutex\|SingleInstance" src/SceneForge.App` returns nothing). |
+| **Major** | `ProjectPersistenceCoordinator.BuildDocumentAsync` swallowed a `ProjectPersistenceException` while trying to read a prior checkpoint (only to preserve its `CreatedUtc`) with **no logging at all** - only a code comment - even though this exact class was given an `IAppLogger` specifically so failures like this would never be silent (every *other* catch block in the same file does log). | `grep -n -A3 "catch (ProjectPersistenceException)" src/SceneForge.App/Persistence/ProjectPersistenceCoordinator.cs` showed the catch body was a comment only, no `_logger.Log` call - the one catch block in the file without one. |
+| Minor (not fixed) | `TempFileRegistry.DeleteIfWithinRoot`, `TempFileRegistry.LoadManifest`, and `ProjectRecoveryService.ReadMarkerAsync` each swallow an I/O-class exception with no logging and no `IAppLogger` dependency available to them. Left as-is: each is a genuinely best-effort, non-data-loss path (a locked file is retried on the next sweep; a corrupt manifest/marker degrades to an already-tested safe default), and threading a logger into three more low-level types for this pass would be a larger, lower-value change than the three fixes above. | Code inspection; no behavior change. |
+| Minor (not fixed) | No single-instance enforcement exists anywhere in `SceneForge.App` - the age-guard fix above narrows the concurrent-instance risk window from "immediate" to "at least `TempFileRegistry.DefaultMinimumOrphanAge` (2 minutes)," it does not eliminate the underlying gap. | Same `grep` as the Major finding above; recorded again here, explicitly, under Outstanding. |
+| Clean | Web/network dependencies | `grep -rniE "httpclient|http://|https://|WebRequest|Socket|TcpClient|DownloadString|WebClient"` across `src/SceneForge.Infrastructure` and `src/SceneForge.App/Persistence` matched only build-artifact/NuGet-restore metadata under `bin/`/`obj/` (source-link JSON, `nuget.org` restore endpoints) - zero runtime network code. |
+| Clean | Unsafe process invocation | The only new process-invoking call site (`StartupRecoveryRunner`'s re-probe) goes through the existing, hardened `IFfprobeService`/`ProcessRunner` (`UseShellExecute = false`, arguments always passed as discrete `ArgumentList` entries, never through a shell) - unchanged by this phase; the finding above was about *when/how* it was awaited, not how the process itself is started. |
+| Clean | Timing drift | Every timestamp this phase persists or compares (`SourceFingerprint.LastWriteTimeUtc`, `SceneForgeProjectDocument.CreatedUtc`/`LastModifiedUtc`, the in-progress marker's timestamp) is `DateTimeOffset`/`DateTime` in UTC, read and compared consistently; `AutosaveService`/`ProjectPersistenceCoordinator`'s redundant double `DateTimeOffset.UtcNow` stamping (once when building the document, again inside `CompleteStageAsync`) is harmless (both same-instant no-op reassignments in the same call), not a drift bug. |
+| Clean | Corruption/recovery test coverage, atomic-write claim | `ProjectStoreTests`/`ProjectRecoveryServiceTests` already covered malformed JSON, missing required fields, an unsupported schema version, and a corrupted checkpoint surfacing an interrupted project with `LastCheckpoint = null`; `AtomicFileWriter`'s "never a corrupted target file" claim rests on `File.Replace`/`File.Move` being same-directory (hence same-volume) atomic renames, which is a correct, well-established Windows/NTFS guarantee, not an unverified assumption - `AtomicFileWriterTests` already proves the write-body-throws case never touches the target either way. |
+| Clean | Packaging | `dotnet sln list` includes `SceneForge.Infrastructure.Tests`; a clean `dotnet build SceneForge.sln`/`dotnet test SceneForge.sln` in both Debug and Release (re-run below) restores and builds it correctly - no project was left out of the solution. |
+
+### Fixes applied
+
+1. **`StartupRecoveryRunner` is now fully async and never blocks startup.** `App.xaml.cs` now shows `MainWindow` first and only *then* fires `_ = StartupRecoveryRunner.RunAsync(_serviceProvider);` (fire-and-forget onto the already-pumping dispatcher, never awaited by `OnStartup` itself). Every call inside `StartupRecoveryRunner` now uses real `await` instead of `.GetAwaiter().GetResult()`. The re-probe call now runs against a dedicated, linked `CancellationTokenSource` bounded by a new `StartupRecoveryRunner.RecoveryProbeTimeout` (20s, independent of `FfprobeService`'s own internal default), and a resulting internal timeout is caught and logged as a warning (`"...did not finish within..."`) rather than propagating - while an *external* cancellation (the caller's own token) still propagates normally, so real cooperative cancellation is not masked. The whole method is additionally wrapped in a top-level `catch (Exception)` logging anything unanticipated, since it now runs fire-and-forget with no other error surface. `ApplyCheckpointToSessionAsync`/`RestoreSourceIfFreshAsync` were made `internal` (plus `[assembly: InternalsVisibleTo("SceneForge.App.Tests")]` in a new `src/SceneForge.App/AssemblyInfo.cs`, mirroring `SceneForge.Media`'s existing pattern) so they can be exercised directly against fakes.
+2. **`ITempFileRegistry.SweepOrphansAsync` now has a minimum-age guard** (`TempFileRegistry.DefaultMinimumOrphanAge`, 2 minutes) before treating an unregistered file as abandoned rather than possibly-still-in-use by another concurrently running instance; an explicit-age overload (`SweepOrphansAsync(TimeSpan minimumOrphanAge, ...)`) is exposed on the interface for callers (and tests) that want a different threshold.
+3. **`ProjectPersistenceCoordinator.BuildDocumentAsync`'s prior-checkpoint-unreadable fallback now logs** a `LogLevel.Warning` entry (message plus the caught `ProjectCorruptedException`/`ProjectSchemaVersionException`) before falling back to a fresh `CreatedUtc`, matching every other catch block in the same file.
+
+### Regression tests added
+
+- **`tests/SceneForge.App.Tests/Persistence/StartupRecoveryRunnerTests.cs`** (4 new tests) - a fresh source causes `ProbeAsync` to be called with a token where `CanBeCanceled` is true (proving it is never `CancellationToken.None`); a stale source never calls `ProbeAsync` at all and surfaces a dialog error; a probe that hangs past its own timeout logs a warning instead of hanging or throwing (using an injectable `probeTimeout` parameter so the test runs in milliseconds, not 20 real seconds); and an externally-cancelled caller token still propagates `OperationCanceledException` rather than being silently swallowed. New test doubles: `RecordingFfprobeService` (records every token it was called with, can hang until cancelled), `FakeAppLogger`.
+- **`tests/SceneForge.App.Tests/Persistence/ProjectPersistenceCoordinatorTests.cs`** (2 new tests) - a corrupted prior checkpoint still lets a new checkpoint succeed, and now logs a `Warning` naming the caught `ProjectCorruptedException`; a normal checkpoint with no prior file logs nothing.
+- **`tests/SceneForge.Infrastructure.Tests/Persistence/TempFileRegistryTests.cs`** (2 new tests, 1 existing test updated) - a just-written, unregistered file is *not* deleted by the default sweep (the actual regression case for the cross-instance race); a file backdated past `DefaultMinimumOrphanAge` still *is* deleted; the pre-existing `SweepOrphansAsync_DeletesUnregisteredFile_LeavesRegisteredFileAlone` test was updated to pass `TimeSpan.Zero` explicitly, since it predates the age guard and would otherwise now fail (this is itself evidence the guard actually changes behavior).
+
+### Verification (re-run after the fixes, actual output)
+
+```
+$ dotnet --version
+8.0.424
+
+$ dotnet format SceneForge.sln --verify-no-changes
+(exit 0, no output)
+
+$ dotnet build SceneForge.sln -c Debug
+  ...
+  Build succeeded.
+      0 Warning(s)
+      0 Error(s)
+
+$ dotnet build SceneForge.sln -c Release
+  ...
+  Build succeeded.
+      0 Warning(s)
+      0 Error(s)
+
+$ dotnet test SceneForge.sln -c Debug
+Passed!  - Failed: 0, Passed: 1,  Skipped: 0,  Total: 1   - SceneForge.Core.Tests.dll
+Passed!  - Failed: 0, Passed: 45, Skipped: 0,  Total: 45  - SceneForge.Infrastructure.Tests.dll
+Passed!  - Failed: 0, Passed: 58, Skipped: 0,  Total: 58  - SceneForge.App.Tests.dll
+Passed!  - Failed: 0, Passed: 474,Skipped: 10, Total: 484 - SceneForge.Media.Tests.dll
+
+$ dotnet test SceneForge.sln -c Release
+Passed!  - Failed: 0, Passed: 1,  Skipped: 0,  Total: 1   - SceneForge.Core.Tests.dll
+Passed!  - Failed: 0, Passed: 45, Skipped: 0,  Total: 45  - SceneForge.Infrastructure.Tests.dll
+Passed!  - Failed: 0, Passed: 474,Skipped: 10, Total: 484 - SceneForge.Media.Tests.dll
+Passed!  - Failed: 0, Passed: 58, Skipped: 0,  Total: 58  - SceneForge.App.Tests.dll
+```
+
+New full-solution total: **588** (1 + 45 + 58 + 484), up from 580 before this
+review pass (8 new regression tests; 1 pre-existing test updated to keep
+passing under the new age-guard behavior). Both configurations fully green
+in this run, including `SceneForge.Media.Tests` - the one isolated,
+non-reproducing flake recorded earlier in this report
+(`TransitionDetectorTests.DetectAsync_ReportsProgressForEachAnalyzedFramePair`)
+did not reproduce in either run performed during this review pass.
+
+`dotnet build src/SceneForge.App/SceneForge.App.csproj` and
+`benchmarks/SceneForge.Benchmarks/SceneForge.Benchmarks.csproj` both also
+build successfully as part of the full-solution build above, confirming
+`SceneForge.Infrastructure`'s new dependency on `SceneForge.Media` did not
+break the benchmark project. **No BenchmarkDotNet run was executed**: no
+benchmark in `benchmarks/SceneForge.Benchmarks` touches anything this phase
+changed (`Detection/`, `Sampling/` only - `SceneForge.Infrastructure` and
+`SceneForge.App` are not benchmarked at all), and CLAUDE.md rule 9 only
+requires benchmarking *optimizations*, which this phase and this review
+pass did not make. This is stated explicitly rather than fabricating a
+before/after benchmark result for code with no benchmark harness.
+
 ## Test inventory (new this phase)
 
 **`SceneForge.Infrastructure.Tests`** (new project) — 43 tests:
@@ -278,12 +371,16 @@ CLAUDE.md rule 13 requires.
   missing-required-fields all throw `ProjectCorruptedException`, and an
   unsupported `SchemaVersion` throws `ProjectSchemaVersionException` naming
   both the found and expected version.
-- **TempFileRegistryTests** (7) — registering a path outside the root
-  throws, cleanup deletes registered files and clears the registry (and
-  tolerates a file already gone), unregister removes an entry, sweeping
-  orphans deletes an unregistered file while leaving a registered one
-  alone, the manifest survives a fresh instance pointed at the same root,
-  and sweeping never touches a sibling directory outside the root.
+- **TempFileRegistryTests** (7, +2 added during the release review below —
+  9 total) — registering a path outside the root throws, cleanup deletes
+  registered files and clears the registry (and tolerates a file already
+  gone), unregister removes an entry, sweeping orphans (with the age guard
+  explicitly disabled via `TimeSpan.Zero`) deletes an unregistered file
+  while leaving a registered one alone, the manifest survives a fresh
+  instance pointed at the same root, sweeping never touches a sibling
+  directory outside the root, and — added by the release review — the
+  *default* sweep leaves a just-written unregistered file alone while still
+  deleting one backdated past `TempFileRegistry.DefaultMinimumOrphanAge`.
 - **StaleSourceDetectorTests** (6) — capturing a missing file throws,
   capturing an existing file matches its real `FileInfo`, and freshness
   checks correctly report Fresh/Missing/size-Changed/timestamp-Changed.
@@ -306,7 +403,9 @@ CLAUDE.md rule 13 requires.
   to the cap, and non-positive `maxFileSizeBytes`/`maxRetainedFiles` both
   throw.
 
-**`SceneForge.App.Tests`** — the existing 52 tests were updated (every
+**`SceneForge.App.Tests`** (52 at initial implementation, +6 added during
+the release review — see that section for `StartupRecoveryRunnerTests` and
+`ProjectPersistenceCoordinatorTests` — 58 total) — the existing 52 tests were updated (every
 constructor call for `WelcomeImportViewModel`, `AnalysisProgressViewModel`,
 `SceneReviewViewModel`, `TimelineSummaryViewModel`, `ExportSettingsViewModel`,
 and `RenderProgressViewModel` now passes a `FakeProjectPersistenceCoordinator`)
@@ -324,18 +423,21 @@ assertions within existing ones — since every scenario needing its own new
 test case already existed as its own method.
 
 Verified via `dotnet test SceneForge.sln` in both Debug and Release: the
-Phase 10 baseline was 537 total. This phase's full-solution total is **580**
-(`SceneForge.Core.Tests` 1, `SceneForge.Infrastructure.Tests` 43 new,
+Phase 10 baseline was 537 total. This phase's initial full-solution total
+was 580 (`SceneForge.Core.Tests` 1, `SceneForge.Infrastructure.Tests` 43,
 `SceneForge.App.Tests` 52, `SceneForge.Media.Tests` 484 — 474 passed + 10
 pre-existing real-binary skips, unrelated to this phase), all passing in
-Release. One isolated, non-reproducing flake was observed in the Debug run
+Release. One isolated, non-reproducing flake was observed in one Debug run
 only, in an unrelated pre-existing `SceneForge.Media.Tests` case
 (`TransitionDetectorTests.DetectAsync_ReportsProgressForEachAnalyzedFramePair`)
 — re-run individually it passed immediately, and it is the same class of
 timing-sensitive pre-existing flake Phase 10's own report already recorded
 for a different case in this same test project; nothing in this phase
 touches `SceneForge.Media` at all (zero files changed in that project this
-phase), so it cannot be a regression this phase introduced.
+phase), so it cannot be a regression this phase introduced. **See "Release
+review (strict audit)" above for the post-review total (588) and the actual
+re-run output** — the flake did not reproduce in either configuration
+during that later pass.
 
 ## Compliance notes against CLAUDE.md
 
@@ -363,14 +465,23 @@ phase), so it cannot be a regression this phase introduced.
   real work *and* never reaches its `CheckpointAsync` call — see Design
   summary's "cancellation retains the last valid checkpoint" and the
   dedicated tests proving it (not merely a token being passed somewhere,
-  the same bar Phase 10's report held itself to).
+  the same bar Phase 10's report held itself to). **The release review found
+  and fixed one real violation of this rule**: `StartupRecoveryRunner` used
+  to invoke a real `IFfprobeService.ProbeAsync` child process with
+  `CancellationToken.None`, blocking the pre-window-creation UI thread
+  synchronously with no cancellation path — see "Release review (strict
+  audit)" above for the fix (now fully async, runs after the window is
+  shown, bounded by its own `RecoveryProbeTimeout`) and its regression
+  tests.
 - **Rule 6-7** (bounded memory/concurrency, no full-video buffering):
   `ITempFileRegistry` never grows unbounded (files are cleaned up on
-  completion and swept for orphans at startup); `RollingFileLogger` caps
-  both individual log file size and the total count of retained rotated
-  files; `SourceFingerprint` is a cheap size/mtime pair, never a full-file
-  hash of a video. Nothing in this phase reads a video frame into memory at
-  all.
+  completion and swept for orphans at startup, now with a minimum-age guard
+  — see Release review — before an unregistered file is treated as
+  abandoned rather than possibly in use by another concurrently running
+  instance); `RollingFileLogger` caps both individual log file size and the
+  total count of retained rotated files; `SourceFingerprint` is a cheap
+  size/mtime pair, never a full-file hash of a video. Nothing in this phase
+  reads a video frame into memory at all.
 - **Rule 8** (test-first): every new `SceneForge.Infrastructure.Persistence`/
   `Logging` component has dedicated tests (43, see Test inventory) written
   and run before this report, and the Self-review section documents one
@@ -398,13 +509,15 @@ phase), so it cannot be a regression this phase introduced.
   still only ever writes to a user-chosen `SaveFileDialog` path).
 - **Rule 13** (format/build/tests before ending): `dotnet format SceneForge.sln --verify-no-changes`
   clean (after the one round of `ENDOFLINE` fixes recorded in Self-review
-  findings); Debug and Release both build with 0 warnings/errors across all
-  ten projects (including the two new ones,
-  `SceneForge.Infrastructure.Tests` and this phase's additions to
-  `SceneForge.Infrastructure`/`SceneForge.App`); both configurations pass
-  every test except the one isolated, non-reproducing, pre-existing
-  `SceneForge.Media.Tests` flake recorded above (Release run was fully
-  green).
+  findings, and again after the release-review fixes' own new files); Debug
+  and Release both build with 0 warnings/errors across all ten projects
+  (including the two new ones, `SceneForge.Infrastructure.Tests` and this
+  phase's additions to `SceneForge.Infrastructure`/`SceneForge.App`); both
+  configurations passed every test in the final re-run (see "Release review
+  (strict audit)" above for the actual command output) — the one isolated,
+  non-reproducing, pre-existing `SceneForge.Media.Tests` flake recorded
+  earlier in this report did not reproduce in either configuration during
+  that final pass.
 - **Rule 14** (update docs on behavior change): this report is that update.
   `docs/ARCHITECTURE_DECISIONS.md` needed no textual change — Decisions 2
   ("UI stays separate from core logic/processing") and 6 ("preserve user
@@ -423,6 +536,20 @@ phase), so it cannot be a regression this phase introduced.
 
 ## Known limitations / Outstanding for later phases
 
+- **No single-instance enforcement anywhere in `SceneForge.App`** (found
+  during the release review — see that section's Major finding). Two
+  concurrently running instances share the same app-owned
+  `%LOCALAPPDATA%\SceneForge` root, each with its own in-memory
+  `TempFileRegistry` manifest. The review's fix (a minimum-age guard before
+  `SweepOrphansAsync` treats an unregistered file as abandoned) narrows the
+  window in which one instance's startup sweep could delete a file another
+  instance is still actively writing, but does not eliminate it - a file
+  written and then left alone by its owning instance for longer than
+  `TempFileRegistry.DefaultMinimumOrphanAge` (2 minutes) without being
+  unregistered would still be swept. A future phase wanting to close this
+  fully would need an actual single-instance guard (e.g. a named
+  `System.Threading.Mutex` acquired in `App.OnStartup`, activating the
+  existing instance's window instead of starting a second process).
 - **A resumed project re-enters at Welcome/Import, not the exact
   interrupted screen.** See Design summary — the persisted schema
   deliberately does not carry `CleanClipExtractionResult`'s full

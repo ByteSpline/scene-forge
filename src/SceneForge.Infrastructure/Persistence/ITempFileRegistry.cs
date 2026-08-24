@@ -24,7 +24,18 @@ public interface ITempFileRegistry
     Task CleanupAsync(CancellationToken cancellationToken = default);
 
     // Deletes any file directly under RootDirectory that is not currently
-    // registered - the "leftover from a process that died before it could
-    // clean up after itself" path, run once at startup.
+    // registered AND has not been modified within the last
+    // TempFileRegistry.DefaultMinimumOrphanAge - the "leftover from a
+    // process that died before it could clean up after itself" path, run
+    // once at startup. The age guard exists because nothing in
+    // SceneForge.App enforces single-instance operation: without it, a
+    // second concurrently-running instance's own in-flight, not-yet-
+    // registered-in-THIS-instance's-manifest temp file could otherwise be
+    // deleted out from under it.
     Task SweepOrphansAsync(CancellationToken cancellationToken = default);
+
+    // Same sweep, with an explicit age threshold instead of the default
+    // (exposed primarily so tests can exercise both sides of the boundary
+    // without waiting for real wall-clock time to pass).
+    Task SweepOrphansAsync(TimeSpan minimumOrphanAge, CancellationToken cancellationToken = default);
 }

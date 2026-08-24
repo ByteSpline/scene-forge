@@ -44,11 +44,19 @@ public partial class App : Application
 
         DispatcherUnhandledException += OnDispatcherUnhandledException;
 
-        StartupRecoveryRunner.Run(_serviceProvider);
-
         var mainWindow = _serviceProvider.GetRequiredService<MainWindow>();
         MainWindow = mainWindow;
         mainWindow.Show();
+
+        // Fired only after the window is visible and this method has
+        // returned control to the dispatcher's message loop - never
+        // blocking startup itself. StartupRecoveryRunner.RunAsync awaits
+        // every I/O call (including a real ffprobe re-probe, bounded by its
+        // own RecoveryProbeTimeout) and catches everything it does not
+        // already expect, so this is safe to fire and forget (CLAUDE.md
+        // rule 5 - see StartupRecoveryRunner's remarks for why this used to
+        // block here, synchronously, before the window existed at all).
+        _ = StartupRecoveryRunner.RunAsync(_serviceProvider);
     }
 
     protected override void OnExit(ExitEventArgs e)
