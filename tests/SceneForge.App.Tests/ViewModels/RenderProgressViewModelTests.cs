@@ -2,6 +2,7 @@ using SceneForge.App.Navigation;
 using SceneForge.App.Session;
 using SceneForge.App.Tests.TestSupport;
 using SceneForge.App.ViewModels;
+using SceneForge.Infrastructure.Persistence;
 using SceneForge.Media.Domain;
 using SceneForge.Media.Rendering;
 
@@ -15,14 +16,18 @@ public class RenderProgressViewModelTests
         var session = BuildSessionWithRenderPlan();
         var renderService = new FakeFFmpegRenderService();
         var navigator = new WorkflowNavigator();
+        var persistence = new FakeProjectPersistenceCoordinator();
 
-        var vm = new RenderProgressViewModel(session, renderService, navigator);
+        var vm = new RenderProgressViewModel(session, renderService, navigator, persistence);
 
         Assert.False(vm.IsRunning);
         Assert.Null(vm.ErrorMessage);
         Assert.NotNull(session.RenderResult);
         Assert.Equal(WorkflowStep.Completion, navigator.CurrentStep);
         Assert.Equal(session.OutputVideoPath, renderService.LastOutputFilePath);
+        Assert.Contains(ProjectStage.Completed, persistence.BegunStages);
+        Assert.Contains(ProjectStage.Completed, persistence.CheckpointedStages);
+        Assert.Equal(1, persistence.FinalizeCallCount);
     }
 
     [Fact]
@@ -35,7 +40,7 @@ public class RenderProgressViewModelTests
         };
         var navigator = new WorkflowNavigator();
 
-        var vm = new RenderProgressViewModel(session, renderService, navigator);
+        var vm = new RenderProgressViewModel(session, renderService, navigator, new FakeProjectPersistenceCoordinator());
 
         Assert.False(vm.IsRunning);
         Assert.Equal("hardware and software encoders both failed", vm.ErrorMessage);
@@ -51,7 +56,7 @@ public class RenderProgressViewModelTests
         var renderService = new FakeFFmpegRenderService { Gate = gate };
         var navigator = new WorkflowNavigator();
 
-        var vm = new RenderProgressViewModel(session, renderService, navigator);
+        var vm = new RenderProgressViewModel(session, renderService, navigator, new FakeProjectPersistenceCoordinator());
 
         Assert.True(vm.IsRunning);
         vm.CancelCommand.Execute(null);

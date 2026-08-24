@@ -2,8 +2,10 @@ using System.IO;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using SceneForge.App.Navigation;
+using SceneForge.App.Persistence;
 using SceneForge.App.Services;
 using SceneForge.App.Session;
+using SceneForge.Infrastructure.Persistence;
 using SceneForge.Media.Rendering;
 
 namespace SceneForge.App.ViewModels;
@@ -24,6 +26,7 @@ public sealed partial class ExportSettingsViewModel : ObservableObject
     private readonly IRenderPlanBuilder _renderPlanBuilder;
     private readonly IDialogService _dialogService;
     private readonly IWorkflowNavigator _navigator;
+    private readonly IProjectPersistenceCoordinator _persistence;
 
     public IReadOnlyList<ResolutionOption> AvailableResolutions { get; } = ResolutionOption.Defaults;
 
@@ -48,12 +51,14 @@ public sealed partial class ExportSettingsViewModel : ObservableObject
         WorkflowSession session,
         IRenderPlanBuilder renderPlanBuilder,
         IDialogService dialogService,
-        IWorkflowNavigator navigator)
+        IWorkflowNavigator navigator,
+        IProjectPersistenceCoordinator persistence)
     {
         _session = session;
         _renderPlanBuilder = renderPlanBuilder;
         _dialogService = dialogService;
         _navigator = navigator;
+        _persistence = persistence;
 
         selectedResolution = AvailableResolutions.FirstOrDefault(r => r.Width == session.OutputWidth && r.Height == session.OutputHeight)
             ?? AvailableResolutions[0];
@@ -78,7 +83,7 @@ public sealed partial class ExportSettingsViewModel : ObservableObject
     }
 
     [RelayCommand(CanExecute = nameof(CanContinue))]
-    private void Continue()
+    private async Task Continue()
     {
         ErrorMessage = null;
 
@@ -119,6 +124,8 @@ public sealed partial class ExportSettingsViewModel : ObservableObject
             _session.FitMode = SelectedFitMode;
             _session.OutputWidth = SelectedResolution.Width;
             _session.OutputHeight = SelectedResolution.Height;
+
+            await _persistence.CheckpointAsync(_session, ProjectStage.RenderConfigured);
 
             _navigator.NavigateTo(WorkflowStep.RenderProgress);
         }

@@ -2,7 +2,9 @@ using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using SceneForge.App.Navigation;
+using SceneForge.App.Persistence;
 using SceneForge.App.Session;
+using SceneForge.Infrastructure.Persistence;
 using SceneForge.Media.Extraction;
 using SceneForge.Media.Planning;
 
@@ -18,6 +20,7 @@ public sealed partial class TimelineSummaryViewModel : ObservableObject
     private readonly WorkflowSession _session;
     private readonly ITimelinePlanner _timelinePlanner;
     private readonly IWorkflowNavigator _navigator;
+    private readonly IProjectPersistenceCoordinator _persistence;
 
     public ObservableCollection<TimelinePlacementRowViewModel> Placements { get; } = [];
 
@@ -39,11 +42,16 @@ public sealed partial class TimelineSummaryViewModel : ObservableObject
     [ObservableProperty]
     private int seed;
 
-    public TimelineSummaryViewModel(WorkflowSession session, ITimelinePlanner timelinePlanner, IWorkflowNavigator navigator)
+    public TimelineSummaryViewModel(
+        WorkflowSession session,
+        ITimelinePlanner timelinePlanner,
+        IWorkflowNavigator navigator,
+        IProjectPersistenceCoordinator persistence)
     {
         _session = session;
         _timelinePlanner = timelinePlanner;
         _navigator = navigator;
+        _persistence = persistence;
 
         seed = session.Seed;
         BuildPlan();
@@ -57,7 +65,11 @@ public sealed partial class TimelineSummaryViewModel : ObservableObject
     }
 
     [RelayCommand(CanExecute = nameof(CanContinue))]
-    private void Continue() => _navigator.NavigateTo(WorkflowStep.ExportSettings);
+    private async Task Continue()
+    {
+        await _persistence.CheckpointAsync(_session, ProjectStage.TimelinePlanned);
+        _navigator.NavigateTo(WorkflowStep.ExportSettings);
+    }
 
     private bool CanContinue() => _session.TimelinePlan is not null && ErrorMessage is null;
 

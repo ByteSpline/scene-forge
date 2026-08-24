@@ -2,8 +2,10 @@ using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using SceneForge.App.Navigation;
+using SceneForge.App.Persistence;
 using SceneForge.App.Services;
 using SceneForge.App.Session;
+using SceneForge.Infrastructure.Persistence;
 using SceneForge.Media.Domain;
 using SceneForge.Media.Extraction;
 using SceneForge.Media.Planning;
@@ -21,6 +23,7 @@ public sealed partial class SceneReviewViewModel : ObservableObject
 {
     private readonly WorkflowSession _session;
     private readonly IWorkflowNavigator _navigator;
+    private readonly IProjectPersistenceCoordinator _persistence;
 
     public ObservableCollection<ClipReviewItemViewModel> Clips { get; } = [];
 
@@ -33,10 +36,15 @@ public sealed partial class SceneReviewViewModel : ObservableObject
     [ObservableProperty]
     private string? errorMessage;
 
-    public SceneReviewViewModel(WorkflowSession session, IThumbnailCacheService thumbnailCache, IWorkflowNavigator navigator)
+    public SceneReviewViewModel(
+        WorkflowSession session,
+        IThumbnailCacheService thumbnailCache,
+        IWorkflowNavigator navigator,
+        IProjectPersistenceCoordinator persistence)
     {
         _session = session;
         _navigator = navigator;
+        _persistence = persistence;
 
         var extraction = session.ExtractionResult;
         var videoPath = session.VideoFilePath;
@@ -77,12 +85,15 @@ public sealed partial class SceneReviewViewModel : ObservableObject
     }
 
     [RelayCommand(CanExecute = nameof(CanContinue))]
-    private void Continue()
+    private async Task Continue()
     {
         _session.ReviewedClips = Clips
             .Where(c => c.IsIncluded && c.IsBoundaryValid)
             .Select(c => c.Clip with { Range = new TimeRange(c.AdjustedStart, c.AdjustedEnd) })
             .ToList();
+
+        await _persistence.CheckpointAsync(_session, ProjectStage.Reviewed);
+
         _navigator.NavigateTo(WorkflowStep.TimelineSummary);
     }
 

@@ -2,6 +2,7 @@ using SceneForge.App.Navigation;
 using SceneForge.App.Session;
 using SceneForge.App.Tests.TestSupport;
 using SceneForge.App.ViewModels;
+using SceneForge.Infrastructure.Persistence;
 using SceneForge.Media.Extraction;
 
 namespace SceneForge.App.Tests.ViewModels;
@@ -13,7 +14,7 @@ public class SceneReviewViewModelTests
     {
         var session = new WorkflowSession { VideoFilePath = "video.mp4" };
 
-        var vm = new SceneReviewViewModel(session, new FakeThumbnailCacheService(), new WorkflowNavigator());
+        var vm = new SceneReviewViewModel(session, new FakeThumbnailCacheService(), new WorkflowNavigator(), new FakeProjectPersistenceCoordinator());
 
         Assert.NotNull(vm.ErrorMessage);
         Assert.Empty(vm.Clips);
@@ -24,7 +25,7 @@ public class SceneReviewViewModelTests
     {
         var session = BuildSessionWithClips(out var accepted, out var rejected);
 
-        var vm = new SceneReviewViewModel(session, new FakeThumbnailCacheService(), new WorkflowNavigator());
+        var vm = new SceneReviewViewModel(session, new FakeThumbnailCacheService(), new WorkflowNavigator(), new FakeProjectPersistenceCoordinator());
 
         Assert.Equal(2, vm.TotalCount);
         Assert.Equal(1, vm.IncludedCount);
@@ -38,7 +39,7 @@ public class SceneReviewViewModelTests
     public void TogglingIsIncluded_PersistsOverrideIntoSessionAndUpdatesCount()
     {
         var session = BuildSessionWithClips(out _, out _);
-        var vm = new SceneReviewViewModel(session, new FakeThumbnailCacheService(), new WorkflowNavigator());
+        var vm = new SceneReviewViewModel(session, new FakeThumbnailCacheService(), new WorkflowNavigator(), new FakeProjectPersistenceCoordinator());
 
         vm.Clips[1].IsIncluded = true;
 
@@ -50,7 +51,7 @@ public class SceneReviewViewModelTests
     public void AdjustingBoundary_WithinRange_PersistsAdjustedRange()
     {
         var session = BuildSessionWithClips(out var accepted, out _);
-        var vm = new SceneReviewViewModel(session, new FakeThumbnailCacheService(), new WorkflowNavigator());
+        var vm = new SceneReviewViewModel(session, new FakeThumbnailCacheService(), new WorkflowNavigator(), new FakeProjectPersistenceCoordinator());
 
         vm.Clips[0].AdjustedStart = accepted.Range.Start + TimeSpan.FromSeconds(1);
 
@@ -62,7 +63,7 @@ public class SceneReviewViewModelTests
     public void AdjustingBoundary_MadeInvalid_FallsBackToOriginalClipRangeInSession()
     {
         var session = BuildSessionWithClips(out var accepted, out _);
-        var vm = new SceneReviewViewModel(session, new FakeThumbnailCacheService(), new WorkflowNavigator());
+        var vm = new SceneReviewViewModel(session, new FakeThumbnailCacheService(), new WorkflowNavigator(), new FakeProjectPersistenceCoordinator());
 
         // Start after end makes the boundary invalid.
         vm.Clips[0].AdjustedStart = accepted.Range.End + TimeSpan.FromSeconds(5);
@@ -75,7 +76,7 @@ public class SceneReviewViewModelTests
     public void ContinueCommand_CanExecute_OnlyWhenAtLeastOneIncludedValidClipExists()
     {
         var session = BuildSessionWithClips(out _, out _);
-        var vm = new SceneReviewViewModel(session, new FakeThumbnailCacheService(), new WorkflowNavigator());
+        var vm = new SceneReviewViewModel(session, new FakeThumbnailCacheService(), new WorkflowNavigator(), new FakeProjectPersistenceCoordinator());
         Assert.True(vm.ContinueCommand.CanExecute(null));
 
         vm.Clips[0].IsIncluded = false;
@@ -88,7 +89,8 @@ public class SceneReviewViewModelTests
     {
         var session = BuildSessionWithClips(out var accepted, out var rejected);
         var navigator = new WorkflowNavigator();
-        var vm = new SceneReviewViewModel(session, new FakeThumbnailCacheService(), navigator);
+        var persistence = new FakeProjectPersistenceCoordinator();
+        var vm = new SceneReviewViewModel(session, new FakeThumbnailCacheService(), navigator, persistence);
         vm.Clips[1].IsIncluded = true;
         vm.Clips[1].AdjustedStart = rejected.Range.Start + TimeSpan.FromSeconds(1);
 
@@ -99,16 +101,17 @@ public class SceneReviewViewModelTests
         var reviewedRejected = session.ReviewedClips.Single(c => c.Range.Start == rejected.Range.Start + TimeSpan.FromSeconds(1));
         Assert.Equal(rejected.Range.End, reviewedRejected.Range.End);
         Assert.Equal(WorkflowStep.TimelineSummary, navigator.CurrentStep);
+        Assert.Contains(ProjectStage.Reviewed, persistence.CheckpointedStages);
     }
 
     [Fact]
     public void Constructor_RevisitingAfterPriorEdits_RestoresOverridesFromSession()
     {
         var session = BuildSessionWithClips(out var accepted, out _);
-        var firstVisit = new SceneReviewViewModel(session, new FakeThumbnailCacheService(), new WorkflowNavigator());
+        var firstVisit = new SceneReviewViewModel(session, new FakeThumbnailCacheService(), new WorkflowNavigator(), new FakeProjectPersistenceCoordinator());
         firstVisit.Clips[0].IsIncluded = false;
 
-        var secondVisit = new SceneReviewViewModel(session, new FakeThumbnailCacheService(), new WorkflowNavigator());
+        var secondVisit = new SceneReviewViewModel(session, new FakeThumbnailCacheService(), new WorkflowNavigator(), new FakeProjectPersistenceCoordinator());
 
         Assert.False(secondVisit.Clips[0].IsIncluded);
     }

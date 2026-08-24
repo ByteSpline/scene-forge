@@ -6,6 +6,12 @@
 
   <ItemGroup>
     <ProjectReference Include="..\SceneForge.Core\SceneForge.Core.csproj" />
+    <!-- Persistence needs to serialize the domain types produced by every
+         pipeline stage (TransitionDetection, ClipScore, RationalFrameRate,
+         ...) - see Persistence/SceneForgeProjectDocument.cs. Media depends
+         only on Core, so this stays a one-directional edge
+         (Infrastructure -> Media -> Core), never a cycle. -->
+    <ProjectReference Include="..\SceneForge.Media\SceneForge.Media.csproj" />
   </ItemGroup>
 
 </Project>

@@ -2,6 +2,7 @@ using SceneForge.App.Navigation;
 using SceneForge.App.Session;
 using SceneForge.App.Tests.TestSupport;
 using SceneForge.App.ViewModels;
+using SceneForge.Infrastructure.Persistence;
 using SceneForge.Media.Domain;
 using SceneForge.Media.Planning;
 
@@ -14,7 +15,7 @@ public class TimelineSummaryViewModelTests
     {
         var session = new WorkflowSession { AudioMediaInfo = MediaInfoBuilder.Audio("audio.m4a", TimeSpan.FromSeconds(6)) };
 
-        var vm = new TimelineSummaryViewModel(session, new TimelinePlanner(), new WorkflowNavigator());
+        var vm = new TimelineSummaryViewModel(session, new TimelinePlanner(), new WorkflowNavigator(), new FakeProjectPersistenceCoordinator());
 
         Assert.NotNull(vm.ErrorMessage);
         Assert.False(vm.ContinueCommand.CanExecute(null));
@@ -26,7 +27,7 @@ public class TimelineSummaryViewModelTests
     {
         var session = BuildSessionWithReviewedClips();
 
-        var vm = new TimelineSummaryViewModel(session, new TimelinePlanner(), new WorkflowNavigator());
+        var vm = new TimelineSummaryViewModel(session, new TimelinePlanner(), new WorkflowNavigator(), new FakeProjectPersistenceCoordinator());
 
         Assert.Null(vm.ErrorMessage);
         Assert.NotNull(session.TimelinePlan);
@@ -40,7 +41,7 @@ public class TimelineSummaryViewModelTests
     public void ReshuffleCommand_IncrementsSeedAndRebuildsPlanIntoSession()
     {
         var session = BuildSessionWithReviewedClips();
-        var vm = new TimelineSummaryViewModel(session, new TimelinePlanner(), new WorkflowNavigator());
+        var vm = new TimelineSummaryViewModel(session, new TimelinePlanner(), new WorkflowNavigator(), new FakeProjectPersistenceCoordinator());
         var originalSeed = vm.Seed;
 
         vm.ReshuffleCommand.Execute(null);
@@ -55,11 +56,13 @@ public class TimelineSummaryViewModelTests
     {
         var session = BuildSessionWithReviewedClips();
         var navigator = new WorkflowNavigator();
-        var vm = new TimelineSummaryViewModel(session, new TimelinePlanner(), navigator);
+        var persistence = new FakeProjectPersistenceCoordinator();
+        var vm = new TimelineSummaryViewModel(session, new TimelinePlanner(), navigator, persistence);
 
         vm.ContinueCommand.Execute(null);
 
         Assert.Equal(WorkflowStep.ExportSettings, navigator.CurrentStep);
+        Assert.Contains(ProjectStage.TimelinePlanned, persistence.CheckpointedStages);
     }
 
     private static WorkflowSession BuildSessionWithReviewedClips()

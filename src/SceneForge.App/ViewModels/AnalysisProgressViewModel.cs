@@ -3,7 +3,9 @@ using System.IO;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using SceneForge.App.Navigation;
+using SceneForge.App.Persistence;
 using SceneForge.App.Session;
+using SceneForge.Infrastructure.Persistence;
 using SceneForge.Media.Detection;
 using SceneForge.Media.Extraction;
 using SceneForge.Media.Planning;
@@ -30,6 +32,7 @@ public sealed partial class AnalysisProgressViewModel : ObservableObject, IDispo
     private readonly ITransitionDetector _transitionDetector;
     private readonly ICleanClipExtractor _cleanClipExtractor;
     private readonly IWorkflowNavigator _navigator;
+    private readonly IProjectPersistenceCoordinator _persistence;
 
     private CancellationTokenSource? _cancellationTokenSource;
 
@@ -58,13 +61,15 @@ public sealed partial class AnalysisProgressViewModel : ObservableObject, IDispo
         IFfprobeService ffprobeService,
         ITransitionDetector transitionDetector,
         ICleanClipExtractor cleanClipExtractor,
-        IWorkflowNavigator navigator)
+        IWorkflowNavigator navigator,
+        IProjectPersistenceCoordinator persistence)
     {
         _session = session;
         _ffprobeService = ffprobeService;
         _transitionDetector = transitionDetector;
         _cleanClipExtractor = cleanClipExtractor;
         _navigator = navigator;
+        _persistence = persistence;
 
         _ = RunCommand.ExecuteAsync(null);
     }
@@ -76,6 +81,8 @@ public sealed partial class AnalysisProgressViewModel : ObservableObject, IDispo
         ErrorMessage = null;
         _cancellationTokenSource = new CancellationTokenSource();
         var cancellationToken = _cancellationTokenSource.Token;
+
+        await _persistence.BeginStageAsync(_session, ProjectStage.Analyzed, cancellationToken).ConfigureAwait(true);
 
         try
         {
@@ -115,6 +122,8 @@ public sealed partial class AnalysisProgressViewModel : ObservableObject, IDispo
             _session.ExtractionResult = extractionResult;
             ClipsAccepted = extractionResult.AcceptedClips.Count;
             ClipsRejected = extractionResult.RejectedClips.Count;
+
+            await _persistence.CheckpointAsync(_session, ProjectStage.Analyzed, cancellationToken).ConfigureAwait(true);
 
             StatusText = "Analysis complete.";
             _navigator.NavigateTo(WorkflowStep.SceneReview);

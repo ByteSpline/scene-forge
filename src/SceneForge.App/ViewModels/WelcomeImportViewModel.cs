@@ -3,8 +3,10 @@ using System.IO;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using SceneForge.App.Navigation;
+using SceneForge.App.Persistence;
 using SceneForge.App.Services;
 using SceneForge.App.Session;
+using SceneForge.Infrastructure.Persistence;
 using SceneForge.Media.Domain;
 using SceneForge.Media.Probing;
 using SceneForge.Media.Tooling;
@@ -26,6 +28,7 @@ public sealed partial class WelcomeImportViewModel : ObservableObject
     private readonly IDialogService _dialogService;
     private readonly IFfprobeService _ffprobeService;
     private readonly IWorkflowNavigator _navigator;
+    private readonly IProjectPersistenceCoordinator _persistence;
 
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(ContinueCommand))]
@@ -56,12 +59,14 @@ public sealed partial class WelcomeImportViewModel : ObservableObject
         WorkflowSession session,
         IDialogService dialogService,
         IFfprobeService ffprobeService,
-        IWorkflowNavigator navigator)
+        IWorkflowNavigator navigator,
+        IProjectPersistenceCoordinator persistence)
     {
         _session = session;
         _dialogService = dialogService;
         _ffprobeService = ffprobeService;
         _navigator = navigator;
+        _persistence = persistence;
 
         VideoFilePath = session.VideoFilePath;
         AudioFilePath = session.AudioFilePath;
@@ -140,6 +145,8 @@ public sealed partial class WelcomeImportViewModel : ObservableObject
             _session.VideoFilePath = validatedPath;
             _session.VideoMediaInfo = info;
             VideoSummary = Describe(info, validatedPath);
+
+            await _persistence.CheckpointAsync(_session, ProjectStage.Imported);
         }
         catch (Exception ex) when (IsRecognizedImportFailure(ex))
         {
@@ -170,6 +177,8 @@ public sealed partial class WelcomeImportViewModel : ObservableObject
             _session.AudioFilePath = validatedPath;
             _session.AudioMediaInfo = info;
             AudioSummary = Describe(info, validatedPath);
+
+            await _persistence.CheckpointAsync(_session, ProjectStage.Imported);
         }
         catch (Exception ex) when (IsRecognizedImportFailure(ex))
         {

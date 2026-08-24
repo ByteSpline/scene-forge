@@ -17,6 +17,13 @@ namespace SceneForge.App.Session;
 // (CLAUDE.md rule 4).
 public sealed class WorkflowSession
 {
+    // Identifies this run's on-disk project checkpoint (see
+    // Persistence.IProjectPersistenceCoordinator) - stable for the whole
+    // session, replaced with a fresh value on Reset() so "Start over"
+    // begins a genuinely new project rather than continuing to overwrite
+    // the finished one's checkpoint.
+    public Guid ProjectId { get; set; } = Guid.NewGuid();
+
     public string? VideoFilePath { get; set; }
 
     public string? AudioFilePath { get; set; }
@@ -73,6 +80,7 @@ public sealed class WorkflowSession
     // actually reached yet).
     public void Reset()
     {
+        ProjectId = Guid.NewGuid();
         VideoFilePath = null;
         AudioFilePath = null;
         VideoMediaInfo = null;
