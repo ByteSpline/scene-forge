@@ -1,0 +1,233 @@
+name: Release
+
+# Manual-only. This workflow must never gain a `push` or `pull_request`
+# trigger - CI's automatic gate lives entirely in ci.yml. Packaging and
+# publishing a release is a deliberate, human-initiated action.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch, tag, or commit SHA to build"
+        required: true
+        default: "main"
+        type: string
+      build_type:
+        description: "artifact-only: build and upload workflow artifacts only. versioned-release: also tag and publish a GitHub Release."
+        required: true
+        default: "artifact-only"
+        type: choice
+        options:
+          - artifact-only
+          - versioned-release
+      version:
+        description: "Semantic version, e.g. 1.4.0 (required when build_type is versioned-release; ignored otherwise)"
+        required: false
+        default: ""
+        type: string
+
+# Only one release build per (ref, build_type) at a time, so two manual
+# dispatches can never race to publish the same tag or clobber each other's
+# packaging/output.
+concurrency:
+  group: release-${{ inputs.ref }}-${{ inputs.build_type }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: 1
+  DOTNET_NOLOGO: 1
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 1
+  CI: true
+
+jobs:
+  build:
+    name: Restore, build, test, and package
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Validate inputs
+        shell: pwsh
+        run: |
+          $buildType = "${{ inputs.build_type }}"
+          $version = "${{ inputs.version }}"
+
+          if ($buildType -eq "versioned-release") {
+            if ([string]::IsNullOrWhiteSpace($version)) {
+              Write-Error "The 'version' input is required when build_type is 'versioned-release'."
+              exit 1
+            }
+            if ($version -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z][0-9A-Za-z-.]*)?$') {
+              Write-Error "The 'version' input '$version' is not a valid semantic version (expected e.g. 1.4.0 or 1.4.0-rc.1)."
+              exit 1
+            }
+          }
+
+      - name: Checkout ${{ inputs.ref }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Resolve build metadata
+        id: meta
+        shell: pwsh
+        run: |
+          # github.sha is the SHA that triggered the workflow dispatch, which
+          # is not necessarily the ref the user asked to build - resolve the
+          # actual checked-out commit instead.
+          $shortSha = (git rev-parse HEAD).Substring(0, 7)
+          $buildType = "${{ inputs.build_type }}"
+          $version = "${{ inputs.version }}"
+
+          if ($buildType -eq "versioned-release") {
+            $versionTag = $version
+          } else {
+            $versionTag = "0.0.0-artifact.$shortSha"
+          }
+
+          Write-Host "short_sha=$shortSha"
+          Write-Host "version_tag=$versionTag"
+          "short_sha=$shortSha" >> $env:GITHUB_OUTPUT
+          "version_tag=$versionTag" >> $env:GITHUB_OUTPUT
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Restore
+        run: dotnet restore SceneForge.sln
+
+      - name: Build
+        run: dotnet build SceneForge.sln --no-restore --configuration Release
+
+      - name: Test
+        run: dotnet test SceneForge.sln --no-build --configuration Release --logger "trx"
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ steps.meta.outputs.version_tag }}
+          path: "**/TestResults/*.trx"
+          if-no-files-found: warn
+
+      - name: Install ffmpeg
+        run: choco install ffmpeg -y --no-progress
+
+      - name: Publish self-contained build
+        shell: pwsh
+        run: |
+          $publishDir = "${{ github.workspace }}\publish\SceneForge.App"
+          $buildType = "${{ inputs.build_type }}"
+          $version = "${{ inputs.version }}"
+
+          $publishArgs = @(
+            "publish", "src/SceneForge.App/SceneForge.App.csproj",
+            "--configuration", "Release",
+            "--runtime", "win-x64",
+            "--self-contained", "true",
+            "--output", $publishDir,
+            "-p:PublishSingleFile=false"
+          )
+          if ($buildType -eq "versioned-release") {
+            $publishArgs += "-p:Version=$version"
+          }
+
+          dotnet @publishArgs
+
+          if (-not (Test-Path (Join-Path $publishDir "SceneForge.App.exe"))) {
+            Write-Error "Publish did not produce SceneForge.App.exe under $publishDir."
+            exit 1
+          }
+
+      - name: Stage ffmpeg into publish output
+        # Same technique as ci.yml's accuracy-regression job - see
+        # packaging/Stage-Ffmpeg.ps1 for why this is needed at all.
+        shell: pwsh
+        run: |
+          $publishDir = "${{ github.workspace }}\publish\SceneForge.App"
+          ./packaging/Stage-Ffmpeg.ps1 -DestinationDirectory (Join-Path $publishDir "tools\ffmpeg")
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+
+          $publishDir = "${{ github.workspace }}\publish\SceneForge.App"
+          $outputDir = "${{ github.workspace }}\packaging\output"
+          New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
+
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            Write-Error "Inno Setup compiler not found at $iscc after installation."
+            exit 1
+          }
+
+          & $iscc packaging\installer.iss `
+            "/DAppVersion=${{ steps.meta.outputs.version_tag }}" `
+            "/DPublishDir=$publishDir" `
+            "/DOutputDir=$outputDir"
+
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "ISCC.exe exited with code $LASTEXITCODE."
+            exit 1
+          }
+
+      - name: Zip portable build
+        shell: pwsh
+        run: |
+          $publishDir = "${{ github.workspace }}\publish\SceneForge.App"
+          $outputDir = "${{ github.workspace }}\packaging\output"
+          $zipPath = Join-Path $outputDir "SceneForge-${{ steps.meta.outputs.version_tag }}-win-x64-portable.zip"
+
+          Compress-Archive -Path (Join-Path $publishDir "*") -DestinationPath $zipPath -CompressionLevel Fastest
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sceneforge-installer-${{ steps.meta.outputs.version_tag }}
+          path: packaging/output/SceneForge-*-win-x64-setup.exe
+          if-no-files-found: error
+
+      - name: Upload portable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sceneforge-portable-${{ steps.meta.outputs.version_tag }}
+          path: packaging/output/SceneForge-*-win-x64-portable.zip
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    if: inputs.build_type == 'versioned-release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download installer artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: sceneforge-installer-${{ inputs.version }}
+          path: dist
+
+      - name: Download portable artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: sceneforge-portable-${{ inputs.version }}
+          path: dist
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "v${{ inputs.version }}" \
+            --repo "${{ github.repository }}" \
+            --target "${{ inputs.ref }}" \
+            --title "SceneForge v${{ inputs.version }}" \
+            --notes "Automated release build of SceneForge v${{ inputs.version }} from ref \`${{ inputs.ref }}\`." \
+            dist/*

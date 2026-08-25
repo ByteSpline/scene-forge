@@ -22,6 +22,11 @@ BenchmarkDotNet.Artifacts/
 [Dd]ist/
 artifacts/
 
+## Locally built installer/portable packages (produced by
+## .github/workflows/release.yml or a manual packaging/installer.iss run;
+## never committed - see docs/CI_RELEASE_GUIDE.md)
+packaging/output/
+
 ## OS files
 .DS_Store
 Thumbs.db
