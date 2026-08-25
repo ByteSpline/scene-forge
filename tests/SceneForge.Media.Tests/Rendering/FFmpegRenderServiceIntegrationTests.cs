@@ -1,3 +1,4 @@
+using SceneForge.Core.Resources;
 using SceneForge.Media.Domain;
 using SceneForge.Media.Planning;
 using SceneForge.Media.Probing;
@@ -76,7 +77,7 @@ public sealed class FFmpegRenderServiceIntegrationTests : IDisposable
         };
 
         var renderPlan = new RenderPlanBuilder().Build(renderPlanRequest);
-        var renderService = new FFmpegRenderService(processRunner, toolLocator, ffprobeService);
+        var renderService = new FFmpegRenderService(processRunner, toolLocator, ffprobeService, new AdaptiveResourceGovernor());
 
         var progressUpdates = new List<RenderProgress>();
         var progress = new Progress<RenderProgress>(progressUpdates.Add);
@@ -90,6 +91,68 @@ public sealed class FFmpegRenderServiceIntegrationTests : IDisposable
         Assert.True(File.Exists(outputPath));
         Assert.True(result.Verification.IsValid);
         Assert.Single((await ffprobeService.ProbeAsync(outputPath, CancellationToken.None)).AudioStreams);
+    }
+
+    // Regression coverage for a real, measured bug that surfaced repeatedly
+    // across Phase 9, Phase 12, and manual Phase 13 testing: ffmpeg's trim
+    // filter keeps every source frame whose presentation time falls within
+    // [start, start+duration) - for a segment duration that is not an
+    // exact multiple of the output frame period, this deterministically
+    // produces however many frames happen to overlap the trim window, not
+    // whatever duration SceneForge originally requested. Because this
+    // happens independently per segment, the discrepancy between the
+    // rendered output's real duration and RenderPlan.PlannedVideoDuration
+    // used to grow with clip count - proven here with more clips than the
+    // 2-segment case above (still real, not the largest realistic edit,
+    // but enough to make a per-segment-accumulating bug visible if the fix
+    // regressed) using deliberately non-frame-aligned segment durations
+    // (1/13th of the shorter fixture's own duration - not a round number
+    // at 25fps). See docs/OPTIMIZATION_REPORT.md for the full investigation
+    // and RenderPlanBuilderTests for the equivalent fake-media unit
+    // coverage of the underlying frame-quantization fix.
+    [SkippableFact]
+    public async Task RenderAsync_RealFfmpegWithFourNonFrameAlignedClips_VerifiesWithinTolerance()
+    {
+        Skip.IfNot(RealFfmpegAvailability.IsAvailable, RealFfmpegAvailability.SkipReason);
+        Directory.CreateDirectory(_outputDirectory);
+
+        var processRunner = new ProcessRunner();
+        var toolLocator = new FfmpegToolLocator(processRunner);
+        var ffprobeService = new FfprobeService(processRunner, toolLocator);
+
+        var videoPath = Path.Combine(AppContext.BaseDirectory, "Fixtures", "Media", "sample_video_audio.mp4");
+        var audioPath = Path.Combine(AppContext.BaseDirectory, "Fixtures", "Media", "sample_audio_only.m4a");
+
+        var sourceMediaInfo = await ffprobeService.ProbeAsync(videoPath, CancellationToken.None);
+        var audioMediaInfo = await ffprobeService.ProbeAsync(audioPath, CancellationToken.None);
+
+        const int clipCount = 4;
+        var segmentDuration = TimeSpan.FromTicks(Math.Min(sourceMediaInfo.Duration.Ticks, audioMediaInfo.Duration.Ticks) / 13);
+        var placements = Enumerable.Range(0, clipCount)
+            .Select(i => TimelinePlanBuilder.CreatePlacement(i, i, sourceStartSeconds: i * segmentDuration.TotalSeconds, sourceDurationSeconds: segmentDuration.TotalSeconds))
+            .ToArray();
+        var outputTimeBase = new RationalFrameRate(25, 1);
+        var timelinePlan = TimelinePlanBuilder.CreatePlan(placements, outputTimeBase);
+
+        var renderPlanRequest = new RenderPlanRequest
+        {
+            TimelinePlan = timelinePlan,
+            SourceFilePath = videoPath,
+            SourceMediaInfo = sourceMediaInfo,
+            OutputSpec = new RenderOutputSpec { Width = 160, Height = 120, FrameRate = outputTimeBase, FitMode = AspectFitMode.Letterbox },
+            Audio = new RenderAudioTrackSpec { FilePath = audioPath, TrimStart = TimeSpan.Zero, TrimDuration = timelinePlan.PlannedDuration },
+        };
+
+        var renderPlan = new RenderPlanBuilder().Build(renderPlanRequest);
+        var renderService = new FFmpegRenderService(processRunner, toolLocator, ffprobeService, new AdaptiveResourceGovernor());
+        var outputPath = Path.Combine(_outputDirectory, "rendered.mp4");
+
+        var result = await renderService.RenderAsync(renderPlan, outputPath, progress: null, CancellationToken.None);
+
+        _output.WriteLine($"PlannedVideoDuration={renderPlan.PlannedVideoDuration}, ActualDuration={result.Verification.ActualDuration}, Delta={result.Verification.DurationDelta}, Tolerance={result.Verification.DurationTolerance}");
+
+        Assert.True(result.Verification.IsValid, $"Verification failed: {result.Verification}");
+        Assert.True(result.Verification.DurationWithinTolerance);
     }
 
     [SkippableFact]
@@ -125,7 +188,7 @@ public sealed class FFmpegRenderServiceIntegrationTests : IDisposable
         };
 
         var renderPlan = new RenderPlanBuilder().Build(renderPlanRequest);
-        var renderService = new FFmpegRenderService(processRunner, toolLocator, ffprobeService);
+        var renderService = new FFmpegRenderService(processRunner, toolLocator, ffprobeService, new AdaptiveResourceGovernor());
         var outputPath = Path.Combine(_outputDirectory, "rendered.mp4");
 
         await renderService.RenderAsync(renderPlan, outputPath, progress: null, CancellationToken.None);

@@ -28,6 +28,25 @@ public sealed class HardwareEncoderProbe : IHardwareEncoderProbe
     private readonly IProcessRunner _processRunner;
     private readonly IFfmpegToolLocator _toolLocator;
 
+    // Real candidate probing launches 1-4 real ffmpeg smoke-test processes;
+    // FFmpegRenderService constructs one HardwareEncoderProbe per app
+    // session (it is registered as a DI singleton), so caching the winning
+    // selection here - rather than re-probing on every RenderAsync call -
+    // turns "N renders in one session" into "1 probe, N renders" without
+    // changing which encoder gets selected. A failed probe is deliberately
+    // NOT cached (transient conditions - e.g. a GPU driver hang - might
+    // resolve by the next render), only a successful one. The cache itself
+    // is a plain lock (not a SemaphoreSlim - this class must stay
+    // synchronous-construction/no-Dispose, matching every other stateless
+    // service in this project); this app never runs two RenderAsync calls
+    // concurrently, so the rare theoretical race (two truly concurrent
+    // first callers both probing once before either publishes) only costs
+    // a handful of duplicate smoke-test processes, never an incorrect
+    // result - each caller always probes with, and is only ever cancelled
+    // by, its own token.
+    private readonly object _cacheGate = new();
+    private VideoEncoderSelection? _cachedSelection;
+
     public HardwareEncoderProbe(IProcessRunner processRunner, IFfmpegToolLocator toolLocator)
     {
         ArgumentNullException.ThrowIfNull(processRunner);
@@ -38,6 +57,25 @@ public sealed class HardwareEncoderProbe : IHardwareEncoderProbe
     }
 
     public async Task<VideoEncoderSelection> SelectEncoderAsync(CancellationToken cancellationToken)
+    {
+        lock (_cacheGate)
+        {
+            if (_cachedSelection is { } cached)
+            {
+                return cached;
+            }
+        }
+
+        var selection = await ProbeAsync(cancellationToken).ConfigureAwait(false);
+
+        lock (_cacheGate)
+        {
+            _cachedSelection ??= selection;
+            return _cachedSelection;
+        }
+    }
+
+    private async Task<VideoEncoderSelection> ProbeAsync(CancellationToken cancellationToken)
     {
         var tools = await _toolLocator.LocateAsync(cancellationToken).ConfigureAwait(false);
         var failures = new List<string>();

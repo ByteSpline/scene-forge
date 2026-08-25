@@ -17,7 +17,7 @@ internal sealed class DissolveClassifier : ITransitionClassifier
     public IReadOnlyList<TransitionCandidate> Classify(IReadOnlyList<FrameSignalSample> window, TransitionDetectionProfile profile)
     {
         var thresholds = profile.Dissolve;
-        var results = new List<TransitionCandidate>();
+        List<TransitionCandidate>? results = null;
         var claimed = new bool[window.Count];
 
         for (var i = 0; i < window.Count; i++)
@@ -78,7 +78,7 @@ internal sealed class DissolveClassifier : ITransitionClassifier
                 continue;
             }
 
-            results.Add(new TransitionCandidate
+            (results ??= []).Add(new TransitionCandidate
             {
                 Type = TransitionType.Dissolve,
                 Start = window[left].PreviousTimestamp,
@@ -96,6 +96,6 @@ internal sealed class DissolveClassifier : ITransitionClassifier
             });
         }
 
-        return results;
+        return results ?? [];
     }
 }

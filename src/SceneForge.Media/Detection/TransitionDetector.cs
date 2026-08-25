@@ -2,6 +2,7 @@ using System.Diagnostics;
 using SceneForge.Media.Detection.Classification;
 using SceneForge.Media.Detection.Fusion;
 using SceneForge.Media.Detection.Signals;
+using SceneForge.Media.Domain;
 using SceneForge.Media.Probing;
 using SceneForge.Media.Sampling;
 
@@ -50,6 +51,29 @@ public sealed class TransitionDetector : ITransitionDetector
         ArgumentNullException.ThrowIfNull(options);
 
         var mediaInfo = await _ffprobeService.ProbeAsync(filePath, cancellationToken).ConfigureAwait(false);
+        return await DetectCoreAsync(filePath, mediaInfo, options, progress, cancellationToken).ConfigureAwait(false);
+    }
+
+    public Task<IReadOnlyList<TransitionDetection>> DetectAsync(
+        string filePath,
+        MediaInfo mediaInfo,
+        TransitionDetectionOptions options,
+        IProgress<TransitionDetectionProgress>? progress,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(mediaInfo);
+        ArgumentNullException.ThrowIfNull(options);
+
+        return DetectCoreAsync(filePath, mediaInfo, options, progress, cancellationToken);
+    }
+
+    private async Task<IReadOnlyList<TransitionDetection>> DetectCoreAsync(
+        string filePath,
+        MediaInfo mediaInfo,
+        TransitionDetectionOptions options,
+        IProgress<TransitionDetectionProgress>? progress,
+        CancellationToken cancellationToken)
+    {
         if (mediaInfo.PrimaryVideoStream is null)
         {
             throw new TransitionDetectionException($"'{filePath}' has no video stream to analyze for transitions.");

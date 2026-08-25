@@ -17,11 +17,10 @@ internal sealed class FlashClassifier : ITransitionClassifier
     public IReadOnlyList<TransitionCandidate> Classify(IReadOnlyList<FrameSignalSample> window, TransitionDetectionProfile profile)
     {
         var thresholds = profile.Flash;
-        var results = new List<TransitionCandidate>();
 
         if (window.Count == 0)
         {
-            return results;
+            return [];
         }
 
         var peakIndex = 0;
@@ -36,7 +35,7 @@ internal sealed class FlashClassifier : ITransitionClassifier
         var peak = window[peakIndex];
         if (peak.WhiteScore < thresholds.MinPeakWhiteScore)
         {
-            return results;
+            return [];
         }
 
         var baseline = peak.WhiteScore * BaselineFraction;
@@ -58,26 +57,27 @@ internal sealed class FlashClassifier : ITransitionClassifier
         var duration = end - start;
         if (duration > thresholds.MaxDuration)
         {
-            return results;
+            return [];
         }
 
-        results.Add(new TransitionCandidate
-        {
-            Type = TransitionType.Flash,
-            Start = start,
-            Peak = peak.Timestamp,
-            End = end,
-            Confidence = Math.Clamp(peak.WhiteScore, 0.0, 1.0),
-            ContributingSignals = new Dictionary<string, double>
+        return
+        [
+            new TransitionCandidate
             {
-                [nameof(FrameSignalSample.WhiteScore)] = peak.WhiteScore,
-                ["DurationSeconds"] = duration.TotalSeconds,
+                Type = TransitionType.Flash,
+                Start = start,
+                Peak = peak.Timestamp,
+                End = end,
+                Confidence = Math.Clamp(peak.WhiteScore, 0.0, 1.0),
+                ContributingSignals = new Dictionary<string, double>
+                {
+                    [nameof(FrameSignalSample.WhiteScore)] = peak.WhiteScore,
+                    ["DurationSeconds"] = duration.TotalSeconds,
+                },
+                DiagnosticReason =
+                    $"Brief WhiteScore spike reaching {peak.WhiteScore:F2} at {peak.Timestamp}, total span {duration.TotalMilliseconds:F0}ms " +
+                    $"(<= {thresholds.MaxDuration.TotalMilliseconds:F0}ms threshold for Flash vs. a slower fade-to-white).",
             },
-            DiagnosticReason =
-                $"Brief WhiteScore spike reaching {peak.WhiteScore:F2} at {peak.Timestamp}, total span {duration.TotalMilliseconds:F0}ms " +
-                $"(<= {thresholds.MaxDuration.TotalMilliseconds:F0}ms threshold for Flash vs. a slower fade-to-white).",
-        });
-
-        return results;
+        ];
     }
 }

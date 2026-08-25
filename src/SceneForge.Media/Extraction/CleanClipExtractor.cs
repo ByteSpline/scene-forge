@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using SceneForge.Media.Domain;
 using SceneForge.Media.Extraction.Clustering;
 using SceneForge.Media.Extraction.Intervals;
 using SceneForge.Media.Extraction.Signals;
@@ -43,6 +44,29 @@ public sealed class CleanClipExtractor : ICleanClipExtractor
         ArgumentNullException.ThrowIfNull(options);
 
         var mediaInfo = await _ffprobeService.ProbeAsync(filePath, cancellationToken).ConfigureAwait(false);
+        return await ExtractCoreAsync(filePath, mediaInfo, options, progress, cancellationToken).ConfigureAwait(false);
+    }
+
+    public Task<CleanClipExtractionResult> ExtractAsync(
+        string filePath,
+        MediaInfo mediaInfo,
+        CleanClipExtractionOptions options,
+        IProgress<CleanClipExtractionProgress>? progress,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(mediaInfo);
+        ArgumentNullException.ThrowIfNull(options);
+
+        return ExtractCoreAsync(filePath, mediaInfo, options, progress, cancellationToken);
+    }
+
+    private async Task<CleanClipExtractionResult> ExtractCoreAsync(
+        string filePath,
+        MediaInfo mediaInfo,
+        CleanClipExtractionOptions options,
+        IProgress<CleanClipExtractionProgress>? progress,
+        CancellationToken cancellationToken)
+    {
         if (mediaInfo.PrimaryVideoStream is null)
         {
             throw new CleanClipExtractionException($"'{filePath}' has no video stream to extract clean clips from.");

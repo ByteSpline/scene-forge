@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using SceneForge.Core.Resources;
 using SceneForge.Media.Probing;
 using SceneForge.Media.Processes;
 using SceneForge.Media.Rendering.Internal;
@@ -32,13 +33,23 @@ public sealed class FFmpegRenderService : IFFmpegRenderService
     // that limit.
     private const int InlineFilterGraphCharacterThreshold = 6_000;
 
+    // A deliberately conservative, disclosed *estimate* - not a guarantee -
+    // of encoded output size, used only to fail fast with a clear error
+    // before spending minutes re-encoding into a destination that was never
+    // going to fit. ~1 MB/s covers typical 1080p H.264 CRF output with
+    // headroom; RenderOutputVerifier still does the real, authoritative
+    // post-render validation regardless of what this guard predicted.
+    private const long EstimatedBytesPerSecondOfOutput = 1_000_000;
+    private const long MinimumRequiredFreeBytes = 200_000_000;
+
     private readonly IProcessRunner _processRunner;
     private readonly IFfmpegToolLocator _toolLocator;
     private readonly IHardwareEncoderProbe _encoderProbe;
     private readonly RenderOutputVerifier _verifier;
+    private readonly IAdaptiveResourceGovernor _resourceGovernor;
 
-    public FFmpegRenderService(IProcessRunner processRunner, IFfmpegToolLocator toolLocator, IFfprobeService ffprobeService)
-        : this(processRunner, toolLocator, new HardwareEncoderProbe(processRunner, toolLocator), new RenderOutputVerifier(ffprobeService, processRunner, toolLocator))
+    public FFmpegRenderService(IProcessRunner processRunner, IFfmpegToolLocator toolLocator, IFfprobeService ffprobeService, IAdaptiveResourceGovernor resourceGovernor)
+        : this(processRunner, toolLocator, new HardwareEncoderProbe(processRunner, toolLocator), new RenderOutputVerifier(ffprobeService, processRunner, toolLocator), resourceGovernor)
     {
     }
 
@@ -46,17 +57,20 @@ public sealed class FFmpegRenderService : IFFmpegRenderService
         IProcessRunner processRunner,
         IFfmpegToolLocator toolLocator,
         IHardwareEncoderProbe encoderProbe,
-        RenderOutputVerifier verifier)
+        RenderOutputVerifier verifier,
+        IAdaptiveResourceGovernor resourceGovernor)
     {
         ArgumentNullException.ThrowIfNull(processRunner);
         ArgumentNullException.ThrowIfNull(toolLocator);
         ArgumentNullException.ThrowIfNull(encoderProbe);
         ArgumentNullException.ThrowIfNull(verifier);
+        ArgumentNullException.ThrowIfNull(resourceGovernor);
 
         _processRunner = processRunner;
         _toolLocator = toolLocator;
         _encoderProbe = encoderProbe;
         _verifier = verifier;
+        _resourceGovernor = resourceGovernor;
     }
 
     public async Task<RenderResult> RenderAsync(
@@ -75,6 +89,9 @@ public sealed class FFmpegRenderService : IFFmpegRenderService
         var resolvedOutputPath = Path.Combine(outputDirectory, Path.GetFileName(outputFilePath));
         OutputDirectoryValidator.EnsureDoesNotOverwriteInput(resolvedOutputPath, plan.SourceFilePath);
         OutputDirectoryValidator.EnsureDoesNotOverwriteInput(resolvedOutputPath, plan.Audio.FilePath);
+
+        var estimatedRequiredBytes = Math.Max(MinimumRequiredFreeBytes, (long)(plan.PlannedVideoDuration.TotalSeconds * EstimatedBytesPerSecondOfOutput));
+        _resourceGovernor.EnsureSufficientDiskSpace(outputDirectory, estimatedRequiredBytes);
 
         var tools = await _toolLocator.LocateAsync(cancellationToken).ConfigureAwait(false);
         var encoder = await _encoderProbe.SelectEncoderAsync(cancellationToken).ConfigureAwait(false);

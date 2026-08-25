@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using OpenCvSharp;
 using SceneForge.Media.Detection.Signals;
 using SceneForge.Media.Sampling;
 
@@ -18,6 +19,12 @@ internal static class ClipFrameMetricsPipeline
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         AnalyzedFrame? previous = null;
+
+        // One BGR working Mat reused for every frame in this run - see
+        // Detection.Signals.SignalPipeline's own remarks (this method is
+        // its Extraction analogue) and
+        // AnalyzedFrame.Create(FrameSample, Mat) for why reuse is safe.
+        using var scratchBgr = new Mat();
         try
         {
             await foreach (var frame in frames.WithCancellation(cancellationToken))
@@ -27,7 +34,7 @@ internal static class ClipFrameMetricsPipeline
                 AnalyzedFrame current;
                 try
                 {
-                    current = AnalyzedFrame.Create(frame);
+                    current = AnalyzedFrame.Create(frame, scratchBgr);
                 }
                 finally
                 {

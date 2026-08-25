@@ -13,7 +13,7 @@ internal sealed class DirectionalSwipeClassifier : ITransitionClassifier
     public IReadOnlyList<TransitionCandidate> Classify(IReadOnlyList<FrameSignalSample> window, TransitionDetectionProfile profile)
     {
         var thresholds = profile.DirectionalSwipe;
-        var results = new List<TransitionCandidate>();
+        List<TransitionCandidate>? results = null;
 
         bool Qualifies(int i) =>
             window[i].GlobalMotion.Magnitude >= thresholds.MinMotionMagnitude &&
@@ -21,10 +21,10 @@ internal sealed class DirectionalSwipeClassifier : ITransitionClassifier
 
         foreach (var (start, end) in ContiguousRunFinder.FindRuns(window.Count, Qualifies, thresholds.MinSustainedSamples))
         {
-            results.Add(BuildCandidate(window, start, end));
+            (results ??= []).Add(BuildCandidate(window, start, end));
         }
 
-        return results;
+        return results ?? [];
     }
 
     private static TransitionCandidate BuildCandidate(IReadOnlyList<FrameSignalSample> window, int start, int end)

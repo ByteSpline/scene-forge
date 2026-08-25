@@ -37,6 +37,25 @@ public class EdgeHistogramExtractorTests
     }
 
     [Fact]
+    public void ExtractFromEdges_GivenTheSameCannyOutputExtractWouldComputeInternally_ProducesIdenticalHistogram()
+    {
+        // AnalyzedFrame.Create already runs Canny once per frame for
+        // whole-frame EdgeDensity; ExtractFromEdges lets Extraction reuse
+        // that same edges Mat instead of recomputing Canny a second time.
+        // This proves the reuse is value-preserving, not just faster: given
+        // the exact edges Mat Extract(gray) would have computed internally,
+        // ExtractFromEdges must produce a bit-identical grid histogram.
+        using var gray = Checkerboard(64, 64, squareSize: 4);
+        using var edges = new Mat();
+        Cv2.Canny(gray, edges, 50, 150);
+
+        var fromGray = EdgeHistogramExtractor.Extract(gray);
+        var fromEdges = EdgeHistogramExtractor.ExtractFromEdges(edges);
+
+        Assert.Equal(fromGray, fromEdges);
+    }
+
+    [Fact]
     public void BorderDensity_ExceedsInteriorDensity_WhenEdgesAreConfinedToTheBorderRegion()
     {
         using var gray = BorderOnlyCheckerboard(64, cellSize: 16);

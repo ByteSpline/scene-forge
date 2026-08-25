@@ -1,3 +1,4 @@
+using SceneForge.Core.Resources;
 using SceneForge.Infrastructure.Persistence;
 using SceneForge.Infrastructure.Tests.TestSupport;
 
@@ -14,7 +15,7 @@ public sealed class ProjectRecoveryServiceTests : IDisposable
     public ProjectRecoveryServiceTests()
     {
         _layout = new ProjectLayout(_fixture.Path);
-        _autosave = new AutosaveService(_store, _layout);
+        _autosave = new AutosaveService(_store, _layout, new AdaptiveResourceGovernor());
         _recovery = new ProjectRecoveryService(_store, _layout);
     }
 

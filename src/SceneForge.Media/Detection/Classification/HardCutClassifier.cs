@@ -21,7 +21,7 @@ internal sealed class HardCutClassifier : ITransitionClassifier
     public IReadOnlyList<TransitionCandidate> Classify(IReadOnlyList<FrameSignalSample> window, TransitionDetectionProfile profile)
     {
         var thresholds = profile.HardCut;
-        var results = new List<TransitionCandidate>();
+        List<TransitionCandidate>? results = null;
 
         for (var i = 0; i < window.Count; i++)
         {
@@ -40,7 +40,7 @@ internal sealed class HardCutClassifier : ITransitionClassifier
             var structuralExcess = Excess(sample.StructuralDifference, thresholds.MinStructuralDifference);
             var hsvExcess = Excess(sample.HsvHistogramDistance, thresholds.MinHsvHistogramDistance);
 
-            results.Add(new TransitionCandidate
+            (results ??= []).Add(new TransitionCandidate
             {
                 Type = TransitionType.HardCut,
                 Start = sample.PreviousTimestamp,
@@ -60,7 +60,7 @@ internal sealed class HardCutClassifier : ITransitionClassifier
             });
         }
 
-        return results;
+        return results ?? [];
     }
 
     // A spike is isolated when its neighbors are markedly lower - a

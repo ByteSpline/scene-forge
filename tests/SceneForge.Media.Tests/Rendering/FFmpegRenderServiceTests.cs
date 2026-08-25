@@ -1,3 +1,4 @@
+using SceneForge.Core.Resources;
 using SceneForge.Media.Domain;
 using SceneForge.Media.Probing;
 using SceneForge.Media.Processes;
@@ -75,6 +76,17 @@ public sealed class FFmpegRenderServiceTests : IDisposable
         IsHardwareAccelerated = false,
     };
 
+    private static IAdaptiveResourceGovernor AlwaysSufficientResourceGovernor => new FakeAdaptiveResourceGovernor();
+
+    private sealed class FakeAdaptiveResourceGovernor : IAdaptiveResourceGovernor
+    {
+        public int MaxWorkers => 4;
+
+        public void EnsureSufficientDiskSpace(string path, long requiredBytes)
+        {
+        }
+    }
+
     private sealed class FakeEncoderProbe : IHardwareEncoderProbe
     {
         private readonly VideoEncoderSelection _selection;
@@ -109,7 +121,7 @@ public sealed class FFmpegRenderServiceTests : IDisposable
     public async Task RenderAsync_NullPlan_Throws()
     {
         var processRunner = FakeProcessRunner.ReturningResult(new ProcessExecutionResult { ExitCode = 0, StandardOutput = "", StandardError = "", Elapsed = TimeSpan.Zero });
-        var service = new FFmpegRenderService(processRunner, new FakeFfmpegToolLocator(), new FakeEncoderProbe(SoftwareSelection), CreatePassingVerifier(processRunner, TimeSpan.FromSeconds(3)));
+        var service = new FFmpegRenderService(processRunner, new FakeFfmpegToolLocator(), new FakeEncoderProbe(SoftwareSelection), CreatePassingVerifier(processRunner, TimeSpan.FromSeconds(3)), AlwaysSufficientResourceGovernor);
 
         await Assert.ThrowsAsync<ArgumentNullException>(() => service.RenderAsync(null!, Path.Combine(_outputDirectory, "out.mp4"), null, CancellationToken.None));
     }
@@ -119,7 +131,7 @@ public sealed class FFmpegRenderServiceTests : IDisposable
     {
         var plan = CreatePlan() with { SourceFilePath = Path.Combine(_outputDirectory, "same.mp4") };
         var processRunner = FakeProcessRunner.ReturningResult(new ProcessExecutionResult { ExitCode = 0, StandardOutput = "", StandardError = "", Elapsed = TimeSpan.Zero });
-        var service = new FFmpegRenderService(processRunner, new FakeFfmpegToolLocator(), new FakeEncoderProbe(SoftwareSelection), CreatePassingVerifier(processRunner, plan.PlannedVideoDuration));
+        var service = new FFmpegRenderService(processRunner, new FakeFfmpegToolLocator(), new FakeEncoderProbe(SoftwareSelection), CreatePassingVerifier(processRunner, plan.PlannedVideoDuration), AlwaysSufficientResourceGovernor);
 
         await Assert.ThrowsAsync<MediaValidationException>(() => service.RenderAsync(plan, Path.Combine(_outputDirectory, "same.mp4"), null, CancellationToken.None));
     }
@@ -129,7 +141,7 @@ public sealed class FFmpegRenderServiceTests : IDisposable
     {
         var plan = CreatePlan();
         var processRunner = new FakeProcessRunner((request, _) => Task.FromResult(new ProcessExecutionResult { ExitCode = 0, StandardOutput = "", StandardError = "", Elapsed = TimeSpan.Zero }));
-        var service = new FFmpegRenderService(processRunner, new FakeFfmpegToolLocator(), new FakeEncoderProbe(HardwareSelection), CreatePassingVerifier(processRunner, plan.PlannedVideoDuration));
+        var service = new FFmpegRenderService(processRunner, new FakeFfmpegToolLocator(), new FakeEncoderProbe(HardwareSelection), CreatePassingVerifier(processRunner, plan.PlannedVideoDuration), AlwaysSufficientResourceGovernor);
 
         var result = await service.RenderAsync(plan, Path.Combine(_outputDirectory, "out.mp4"), null, CancellationToken.None);
 
@@ -157,7 +169,7 @@ public sealed class FFmpegRenderServiceTests : IDisposable
 
             return Task.FromResult(new ProcessExecutionResult { ExitCode = 0, StandardOutput = "", StandardError = "", Elapsed = TimeSpan.Zero });
         });
-        var service = new FFmpegRenderService(processRunner, new FakeFfmpegToolLocator(), new FakeEncoderProbe(HardwareSelection), CreatePassingVerifier(processRunner, plan.PlannedVideoDuration));
+        var service = new FFmpegRenderService(processRunner, new FakeFfmpegToolLocator(), new FakeEncoderProbe(HardwareSelection), CreatePassingVerifier(processRunner, plan.PlannedVideoDuration), AlwaysSufficientResourceGovernor);
 
         var result = await service.RenderAsync(plan, Path.Combine(_outputDirectory, "out.mp4"), null, CancellationToken.None);
 
@@ -175,7 +187,7 @@ public sealed class FFmpegRenderServiceTests : IDisposable
             var exitCode = IsRenderInvocation(request) ? 1 : 0;
             return Task.FromResult(new ProcessExecutionResult { ExitCode = exitCode, StandardOutput = "", StandardError = "boom", Elapsed = TimeSpan.Zero });
         });
-        var service = new FFmpegRenderService(processRunner, new FakeFfmpegToolLocator(), new FakeEncoderProbe(HardwareSelection), CreatePassingVerifier(processRunner, plan.PlannedVideoDuration));
+        var service = new FFmpegRenderService(processRunner, new FakeFfmpegToolLocator(), new FakeEncoderProbe(HardwareSelection), CreatePassingVerifier(processRunner, plan.PlannedVideoDuration), AlwaysSufficientResourceGovernor);
 
         await Assert.ThrowsAsync<RenderExecutionException>(() => service.RenderAsync(plan, Path.Combine(_outputDirectory, "out.mp4"), null, CancellationToken.None));
     }
@@ -195,7 +207,7 @@ public sealed class FFmpegRenderServiceTests : IDisposable
             var exitCode = IsRenderInvocation(request) ? 1 : 0;
             return Task.FromResult(new ProcessExecutionResult { ExitCode = exitCode, StandardOutput = "", StandardError = "boom", Elapsed = TimeSpan.Zero });
         });
-        var service = new FFmpegRenderService(processRunner, new FakeFfmpegToolLocator(), new FakeEncoderProbe(SoftwareSelection), CreatePassingVerifier(processRunner, plan.PlannedVideoDuration));
+        var service = new FFmpegRenderService(processRunner, new FakeFfmpegToolLocator(), new FakeEncoderProbe(SoftwareSelection), CreatePassingVerifier(processRunner, plan.PlannedVideoDuration), AlwaysSufficientResourceGovernor);
 
         await Assert.ThrowsAsync<RenderExecutionException>(() => service.RenderAsync(plan, Path.Combine(_outputDirectory, "out.mp4"), null, CancellationToken.None));
         Assert.Equal(1, renderAttempts);
@@ -206,7 +218,7 @@ public sealed class FFmpegRenderServiceTests : IDisposable
     {
         var plan = CreatePlan();
         var processRunner = new FakeProcessRunner((_, _) => Task.FromResult(new ProcessExecutionResult { ExitCode = 0, StandardOutput = "", StandardError = "", Elapsed = TimeSpan.Zero }));
-        var service = new FFmpegRenderService(processRunner, new FakeFfmpegToolLocator(), new FakeEncoderProbe(SoftwareSelection), CreateFailingVerifier(processRunner));
+        var service = new FFmpegRenderService(processRunner, new FakeFfmpegToolLocator(), new FakeEncoderProbe(SoftwareSelection), CreateFailingVerifier(processRunner), AlwaysSufficientResourceGovernor);
 
         var exception = await Assert.ThrowsAsync<RenderVerificationException>(() => service.RenderAsync(plan, Path.Combine(_outputDirectory, "out.mp4"), null, CancellationToken.None));
 
@@ -230,7 +242,7 @@ public sealed class FFmpegRenderServiceTests : IDisposable
 
             return Task.FromResult(new ProcessExecutionResult { ExitCode = 0, StandardOutput = "", StandardError = "", Elapsed = TimeSpan.Zero });
         });
-        var service = new FFmpegRenderService(processRunner, new FakeFfmpegToolLocator(), new FakeEncoderProbe(SoftwareSelection), CreatePassingVerifier(processRunner, plan.PlannedVideoDuration));
+        var service = new FFmpegRenderService(processRunner, new FakeFfmpegToolLocator(), new FakeEncoderProbe(SoftwareSelection), CreatePassingVerifier(processRunner, plan.PlannedVideoDuration), AlwaysSufficientResourceGovernor);
 
         var progress = new RecordingProgress<RenderProgress>();
 
@@ -259,7 +271,7 @@ public sealed class FFmpegRenderServiceTests : IDisposable
 
             return Task.FromResult(new ProcessExecutionResult { ExitCode = 0, StandardOutput = "", StandardError = "", Elapsed = TimeSpan.Zero });
         });
-        var service = new FFmpegRenderService(processRunner, new FakeFfmpegToolLocator(), new FakeEncoderProbe(SoftwareSelection), CreatePassingVerifier(processRunner, plan.PlannedVideoDuration));
+        var service = new FFmpegRenderService(processRunner, new FakeFfmpegToolLocator(), new FakeEncoderProbe(SoftwareSelection), CreatePassingVerifier(processRunner, plan.PlannedVideoDuration), AlwaysSufficientResourceGovernor);
 
         await service.RenderAsync(plan, Path.Combine(_outputDirectory, "out.mp4"), null, CancellationToken.None);
 
@@ -281,7 +293,7 @@ public sealed class FFmpegRenderServiceTests : IDisposable
 
             return Task.FromResult(new ProcessExecutionResult { ExitCode = 0, StandardOutput = "", StandardError = "", Elapsed = TimeSpan.Zero });
         });
-        var service = new FFmpegRenderService(processRunner, new FakeFfmpegToolLocator(), new FakeEncoderProbe(SoftwareSelection), CreatePassingVerifier(processRunner, plan.PlannedVideoDuration));
+        var service = new FFmpegRenderService(processRunner, new FakeFfmpegToolLocator(), new FakeEncoderProbe(SoftwareSelection), CreatePassingVerifier(processRunner, plan.PlannedVideoDuration), AlwaysSufficientResourceGovernor);
 
         await service.RenderAsync(plan, Path.Combine(_outputDirectory, "out.mp4"), null, CancellationToken.None);
     }
@@ -299,7 +311,7 @@ public sealed class FFmpegRenderServiceTests : IDisposable
 
             return Task.FromResult(new ProcessExecutionResult { ExitCode = 0, StandardOutput = "", StandardError = "", Elapsed = TimeSpan.Zero });
         });
-        var service = new FFmpegRenderService(processRunner, new FakeFfmpegToolLocator(), new FakeEncoderProbe(SoftwareSelection), CreatePassingVerifier(processRunner, plan.PlannedVideoDuration));
+        var service = new FFmpegRenderService(processRunner, new FakeFfmpegToolLocator(), new FakeEncoderProbe(SoftwareSelection), CreatePassingVerifier(processRunner, plan.PlannedVideoDuration), AlwaysSufficientResourceGovernor);
 
         await service.RenderAsync(plan, Path.Combine(_outputDirectory, "out.mp4"), null, CancellationToken.None);
     }

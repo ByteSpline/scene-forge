@@ -15,11 +15,10 @@ internal sealed class BlurTransitionClassifier : ITransitionClassifier
     public IReadOnlyList<TransitionCandidate> Classify(IReadOnlyList<FrameSignalSample> window, TransitionDetectionProfile profile)
     {
         var thresholds = profile.BlurTransition;
-        var results = new List<TransitionCandidate>();
 
         if (window.Count == 0)
         {
-            return results;
+            return [];
         }
 
         var baseline = window[0].CurrentLaplacianVariance;
@@ -35,13 +34,13 @@ internal sealed class BlurTransitionClassifier : ITransitionClassifier
 
         if (baseline <= 1e-9)
         {
-            return results;
+            return [];
         }
 
         var dropRatio = (baseline - window[minIndex].CurrentLaplacianVariance) / baseline;
         if (dropRatio < thresholds.MinLaplacianDropRatio)
         {
-            return results;
+            return [];
         }
 
         var recoveryLevel = baseline * (1 - (thresholds.MinLaplacianDropRatio * 0.5));
@@ -60,7 +59,7 @@ internal sealed class BlurTransitionClassifier : ITransitionClassifier
 
         if (right - left + 1 < thresholds.MinSustainedSamples)
         {
-            return results;
+            return [];
         }
 
         var baselineEdge = window[0].CurrentEdgeDensity;
@@ -72,26 +71,27 @@ internal sealed class BlurTransitionClassifier : ITransitionClassifier
         var edgeDrop = baselineEdge - window[minIndex].CurrentEdgeDensity;
         if (edgeDrop < thresholds.MinEdgeDensityDrop)
         {
-            return results;
+            return [];
         }
 
-        results.Add(new TransitionCandidate
-        {
-            Type = TransitionType.BlurTransition,
-            Start = window[left].PreviousTimestamp,
-            Peak = window[minIndex].Timestamp,
-            End = window[right].Timestamp,
-            Confidence = Math.Clamp(dropRatio, 0.0, 1.0),
-            ContributingSignals = new Dictionary<string, double>
+        return
+        [
+            new TransitionCandidate
             {
-                ["LaplacianDropRatio"] = dropRatio,
-                [nameof(FrameSignalSample.CurrentEdgeDensity) + "Drop"] = edgeDrop,
+                Type = TransitionType.BlurTransition,
+                Start = window[left].PreviousTimestamp,
+                Peak = window[minIndex].Timestamp,
+                End = window[right].Timestamp,
+                Confidence = Math.Clamp(dropRatio, 0.0, 1.0),
+                ContributingSignals = new Dictionary<string, double>
+                {
+                    ["LaplacianDropRatio"] = dropRatio,
+                    [nameof(FrameSignalSample.CurrentEdgeDensity) + "Drop"] = edgeDrop,
+                },
+                DiagnosticReason =
+                    $"Laplacian variance dropped {dropRatio:P0} from the window's baseline sharpness at {window[minIndex].Timestamp}, " +
+                    $"with a corresponding edge-density drop of {edgeDrop:F2}, recovering by {window[right].Timestamp}.",
             },
-            DiagnosticReason =
-                $"Laplacian variance dropped {dropRatio:P0} from the window's baseline sharpness at {window[minIndex].Timestamp}, " +
-                $"with a corresponding edge-density drop of {edgeDrop:F2}, recovering by {window[right].Timestamp}.",
-        });
-
-        return results;
+        ];
     }
 }
