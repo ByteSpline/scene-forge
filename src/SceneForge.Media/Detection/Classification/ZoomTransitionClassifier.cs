@@ -15,7 +15,7 @@ internal sealed class ZoomTransitionClassifier : ITransitionClassifier
     public IReadOnlyList<TransitionCandidate> Classify(IReadOnlyList<FrameSignalSample> window, TransitionDetectionProfile profile)
     {
         var thresholds = profile.ZoomTransition;
-        var results = new List<TransitionCandidate>();
+        List<TransitionCandidate>? results = null;
 
         bool Qualifies(int i) =>
             window[i].GlobalMotion.Magnitude >= thresholds.MinMotionMagnitude &&
@@ -25,11 +25,11 @@ internal sealed class ZoomTransitionClassifier : ITransitionClassifier
         {
             foreach (var (subStart, subEnd) in SplitBySign(window, start, end))
             {
-                results.Add(BuildCandidate(window, subStart, subEnd));
+                (results ??= []).Add(BuildCandidate(window, subStart, subEnd));
             }
         }
 
-        return results;
+        return results ?? [];
     }
 
     // Splits [start, end] at any point where RadialOutwardScore changes

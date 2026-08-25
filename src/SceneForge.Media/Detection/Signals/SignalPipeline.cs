@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using OpenCvSharp;
 using SceneForge.Media.Sampling;
 
 namespace SceneForge.Media.Detection.Signals;
@@ -28,6 +29,14 @@ internal sealed class SignalPipeline
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         AnalyzedFrame? previous = null;
+
+        // One BGR working Mat reused for every frame in this run (all
+        // frames share the same fixed dimensions - see FrameDimensions),
+        // instead of AnalyzedFrame.Create allocating a fresh native buffer
+        // every single frame. See AnalyzedFrame.Create(FrameSample, Mat)'s
+        // own remarks for why reuse is safe (Gray/HsvHistogram/Edges are
+        // always independently-allocated, never views over this buffer).
+        using var scratchBgr = new Mat();
         try
         {
             await foreach (var frame in frames.WithCancellation(cancellationToken))
@@ -37,7 +46,7 @@ internal sealed class SignalPipeline
                 AnalyzedFrame current;
                 try
                 {
-                    current = AnalyzedFrame.Create(frame);
+                    current = AnalyzedFrame.Create(frame, scratchBgr);
                 }
                 finally
                 {

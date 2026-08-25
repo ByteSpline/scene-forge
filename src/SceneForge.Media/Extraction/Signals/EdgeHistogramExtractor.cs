@@ -22,6 +22,17 @@ internal static class EdgeHistogramExtractor
         using var edges = new Mat();
         Cv2.Canny(gray, edges, CannyLowThreshold, CannyHighThreshold);
 
+        return ExtractFromEdges(edges);
+    }
+
+    // Same grid-reduction as Extract(Mat gray), but takes an already-computed
+    // Canny edges Mat instead of recomputing Canny from a grayscale frame.
+    // AnalyzedFrame.Create already runs Canny once per frame for whole-frame
+    // EdgeDensity (see its own Edges property); ClipFrameMetricsExtractor
+    // passes that Mat straight through here instead of paying for a second,
+    // redundant Canny pass over the same pixels every frame.
+    public static float[] ExtractFromEdges(Mat edges)
+    {
         var cellWidth = edges.Cols / GridSize;
         var cellHeight = edges.Rows / GridSize;
         var histogram = new float[GridSize * GridSize];

@@ -17,12 +17,13 @@ internal sealed class FadeBlackClassifier : ITransitionClassifier
     public IReadOnlyList<TransitionCandidate> Classify(IReadOnlyList<FrameSignalSample> window, TransitionDetectionProfile profile)
     {
         var thresholds = profile.FadeBlack;
-        var results = new List<TransitionCandidate>();
 
         if (window.Count == 0)
         {
-            return results;
+            return [];
         }
+
+        List<TransitionCandidate>? results = null;
 
         var peakIndex = 0;
         for (var i = 1; i < window.Count; i++)
@@ -36,7 +37,7 @@ internal sealed class FadeBlackClassifier : ITransitionClassifier
         var peak = window[peakIndex];
         if (peak.BlackScore < thresholds.MinPeakBlackScore)
         {
-            return results;
+            return [];
         }
 
         // Walk outward from the peak while BlackScore keeps moving toward
@@ -60,7 +61,7 @@ internal sealed class FadeBlackClassifier : ITransitionClassifier
             var consistency = TrendConsistency(window, rampInStart, peakIndex, expectDarkening: true);
             if (consistency >= thresholds.MinTrendConsistency)
             {
-                results.Add(BuildCandidate(
+                (results ??= []).Add(BuildCandidate(
                     TransitionType.FadeToBlack,
                     window[rampInStart].PreviousTimestamp,
                     peak.Timestamp,
@@ -82,7 +83,7 @@ internal sealed class FadeBlackClassifier : ITransitionClassifier
             var consistency = TrendConsistency(window, peakIndex, rampOutEnd, expectDarkening: false);
             if (consistency >= thresholds.MinTrendConsistency)
             {
-                results.Add(BuildCandidate(
+                (results ??= []).Add(BuildCandidate(
                     TransitionType.FadeFromBlack,
                     peak.Timestamp,
                     peak.Timestamp,
@@ -93,7 +94,7 @@ internal sealed class FadeBlackClassifier : ITransitionClassifier
             }
         }
 
-        return results;
+        return results ?? [];
     }
 
     // Fraction of steps in [start, end] whose LuminanceDelta sign agrees

@@ -16,5 +16,14 @@ internal sealed class FakeFfprobeService : IFfprobeService
 
     public static FakeFfprobeService Throwing(Exception exception) => new((_, _) => throw exception);
 
-    public Task<MediaInfo> ProbeAsync(string filePath, CancellationToken cancellationToken) => _handler(filePath, cancellationToken);
+    // Lets tests assert a caller reused an already-resolved MediaInfo
+    // instead of re-probing (e.g. TransitionDetector/CleanClipExtractor's
+    // MediaInfo-accepting overloads should never call this at all).
+    public int ProbeCallCount { get; private set; }
+
+    public Task<MediaInfo> ProbeAsync(string filePath, CancellationToken cancellationToken)
+    {
+        ProbeCallCount++;
+        return _handler(filePath, cancellationToken);
+    }
 }

@@ -9,6 +9,7 @@ using SceneForge.App.Persistence;
 using SceneForge.App.Services;
 using SceneForge.App.Session;
 using SceneForge.App.ViewModels;
+using SceneForge.Core.Resources;
 using SceneForge.Infrastructure.Logging;
 using SceneForge.Infrastructure.Persistence;
 using SceneForge.Media.Detection;
@@ -67,6 +68,13 @@ public partial class App : Application
 
     private static void ConfigureServices(IServiceCollection services)
     {
+        // Shared adaptive resource control (bounded worker counts, disk-space
+        // guards) - lives in SceneForge.Core so both the Media pipeline and
+        // App-layer services below can depend on the same instance without
+        // Media needing a reference to Infrastructure (see
+        // IAdaptiveResourceGovernor's own remarks on the reference graph).
+        services.AddSingleton<IAdaptiveResourceGovernor, AdaptiveResourceGovernor>();
+
         // SceneForge.Media pipeline - the same real implementations every
         // prior phase's tests exercise. Registered as singletons: none of
         // them hold per-run mutable state (each call takes its own request/

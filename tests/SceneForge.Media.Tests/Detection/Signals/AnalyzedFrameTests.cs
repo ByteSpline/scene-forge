@@ -60,6 +60,23 @@ public class AnalyzedFrameTests
     }
 
     [Fact]
+    public void Create_CheckerboardFrame_EdgesMatMatchesEdgeDensity()
+    {
+        // EdgeDensity is derived from Edges (CountNonZero / totalPixels) -
+        // the retained Edges Mat exists so Extraction can reuse this same
+        // Canny pass instead of recomputing it; this proves the two stay
+        // in lockstep rather than drifting apart from independent
+        // computation.
+        using var frame = FrameSampleBuilder.Checkerboard();
+        using var analyzed = AnalyzedFrame.Create(frame);
+
+        Assert.Equal(analyzed.Gray.Rows, analyzed.Edges.Rows);
+        Assert.Equal(analyzed.Gray.Cols, analyzed.Edges.Cols);
+        var expectedDensity = OpenCvSharp.Cv2.CountNonZero(analyzed.Edges) / (double)(analyzed.Edges.Rows * analyzed.Edges.Cols);
+        Assert.Equal(expectedDensity, analyzed.EdgeDensity);
+    }
+
+    [Fact]
     public void Create_Gray8Frame_Throws()
     {
         using var frame = FrameSampleBuilder.Gray8SolidColor(128);
@@ -77,6 +94,43 @@ public class AnalyzedFrameTests
         var exception = Record.Exception(() => analyzed.Dispose());
 
         Assert.Null(exception);
+    }
+
+    [Fact]
+    public void Create_GivenReusableScratchBgrMat_ProducesSameResultAsWithoutOne()
+    {
+        using var frame = FrameSampleBuilder.Checkerboard();
+        using var scratchBgr = new OpenCvSharp.Mat();
+
+        using var withoutScratch = AnalyzedFrame.Create(frame);
+        using var withScratch = AnalyzedFrame.Create(frame, scratchBgr);
+
+        Assert.Equal(withoutScratch.MeanLuminance, withScratch.MeanLuminance);
+        Assert.Equal(withoutScratch.EdgeDensity, withScratch.EdgeDensity);
+        Assert.Equal(withoutScratch.LaplacianVariance, withScratch.LaplacianVariance);
+        Assert.Equal(withoutScratch.BlackScore, withScratch.BlackScore);
+        Assert.Equal(withoutScratch.WhiteScore, withScratch.WhiteScore);
+    }
+
+    [Fact]
+    public void Create_ScratchBgrMatReusedAcrossTwoDifferentFrames_EachResultStaysIndependentlyCorrect()
+    {
+        // The whole point of the reusable scratch Mat is that its native
+        // buffer gets overwritten by the next Create call - this proves
+        // that overwrite never corrupts an already-returned AnalyzedFrame,
+        // because Gray/HsvHistogram/Edges are always freshly-allocated
+        // destination Mats, never views over the scratch buffer.
+        using var frameA = FrameSampleBuilder.SolidColor(0, 0, 0);
+        using var frameB = FrameSampleBuilder.SolidColor(255, 255, 255);
+        using var scratchBgr = new OpenCvSharp.Mat();
+
+        using var analyzedA = AnalyzedFrame.Create(frameA, scratchBgr);
+        using var analyzedB = AnalyzedFrame.Create(frameB, scratchBgr);
+
+        Assert.True(analyzedA.BlackScore > 0.99);
+        Assert.True(analyzedA.MeanLuminance < 0.01);
+        Assert.True(analyzedB.WhiteScore > 0.99);
+        Assert.True(analyzedB.MeanLuminance > 0.99);
     }
 
     [Fact]

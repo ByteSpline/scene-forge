@@ -208,6 +208,53 @@ public class CleanClipExtractorTests
         Assert.Equal(1, reports[0].FramesAnalyzed);
     }
 
+    [Fact]
+    public async Task ExtractAsync_GivenMediaInfo_NeverProbesInternally()
+    {
+        var frames = BuildFrames(0.0, 10.0, 0.25, (128, 128, 128));
+        var sampler = FakeFrameSampler.ReturningFrames(() => frames);
+        var ffprobe = FakeFfprobeService.ReturningMediaInfo(CreateMediaInfo(TimeSpan.FromSeconds(10)));
+        var extractor = new CleanClipExtractor(sampler, ffprobe);
+
+        var options = new CleanClipExtractionOptions
+        {
+            SamplingOptions = FrameSamplingOptions.ForProfile(AnalysisProfile.Fast),
+            SceneRanges = [new TimeRange(TimeSpan.Zero, TimeSpan.FromSeconds(10))],
+            Scoring = LenientScoring,
+        };
+
+        var result = await extractor.ExtractAsync("input.mp4", CreateMediaInfo(TimeSpan.FromSeconds(10)), options, null, CancellationToken.None);
+
+        Assert.NotEmpty(result.AcceptedClips);
+        Assert.Equal(0, ffprobe.ProbeCallCount);
+    }
+
+    [Fact]
+    public async Task ExtractAsync_GivenMediaInfoWithNoVideoStream_ThrowsWithoutInvokingFrameSampler()
+    {
+        var mediaInfo = new MediaInfo
+        {
+            FilePath = "audio.mp4",
+            FormatName = "wav",
+            Duration = TimeSpan.FromSeconds(1),
+            VideoStreams = [],
+            AudioStreams = [],
+        };
+        var sampler = FakeFrameSampler.ReturningFrames(() => throw new InvalidOperationException("Frame sampler must not be invoked when there is no video stream."));
+        var ffprobe = FakeFfprobeService.ReturningMediaInfo(mediaInfo);
+        var extractor = new CleanClipExtractor(sampler, ffprobe);
+
+        var options = new CleanClipExtractionOptions
+        {
+            SamplingOptions = FrameSamplingOptions.ForProfile(AnalysisProfile.Fast),
+            SceneRanges = [new TimeRange(TimeSpan.Zero, TimeSpan.FromSeconds(1))],
+        };
+
+        await Assert.ThrowsAsync<CleanClipExtractionException>(() => extractor.ExtractAsync("audio.mp4", mediaInfo, options, null, CancellationToken.None));
+
+        Assert.Equal(0, ffprobe.ProbeCallCount);
+    }
+
     private static List<FrameSample> BuildFrames(double startSeconds, double endSeconds, double stepSeconds, (byte B, byte G, byte R) color)
     {
         var frames = new List<FrameSample>();

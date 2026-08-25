@@ -33,6 +33,7 @@ internal sealed class AnalyzedFrame : IDisposable
         TimeSpan timestamp,
         Mat gray,
         Mat hsvHistogram,
+        Mat edges,
         double meanLuminance,
         double edgeDensity,
         double laplacianVariance,
@@ -42,6 +43,7 @@ internal sealed class AnalyzedFrame : IDisposable
         Timestamp = timestamp;
         Gray = gray;
         HsvHistogram = hsvHistogram;
+        Edges = edges;
         MeanLuminance = meanLuminance;
         EdgeDensity = edgeDensity;
         LaplacianVariance = laplacianVariance;
@@ -57,6 +59,14 @@ internal sealed class AnalyzedFrame : IDisposable
     // Normalized (L1) 2D histogram over Hue x Saturation, HueBins x
     // SaturationBins, CV_32F. Owned by this instance.
     public Mat HsvHistogram { get; }
+
+    // Single-channel 8-bit Canny edge map (255 at an edge pixel, 0
+    // elsewhere), same pass that produces EdgeDensity below. Retained
+    // (rather than a Create-local `using` temporary) so
+    // Extraction.Signals.EdgeHistogramExtractor.ExtractFromEdges can reuse
+    // it instead of recomputing Canny a second time per frame. Owned by
+    // this instance.
+    public Mat Edges { get; }
 
     // Mean grayscale intensity, normalized to 0..1.
     public double MeanLuminance { get; }
@@ -75,14 +85,38 @@ internal sealed class AnalyzedFrame : IDisposable
 
     public static AnalyzedFrame Create(FrameSample frame)
     {
+        using var scratchBgr = new Mat();
+        return Create(frame, scratchBgr);
+    }
+
+    // Same as Create(FrameSample), but writes into a caller-owned,
+    // caller-reused BGR working Mat instead of allocating (and freeing) a
+    // fresh one every call. All frames within one pipeline run share the
+    // same fixed dimensions, so SignalPipeline/ClipFrameMetricsPipeline
+    // each own exactly one scratchBgr for their whole streamed run - one
+    // native buffer instead of one per frame. Resized in place (via
+    // Mat.Create, a no-op if already the right size/type) only if it
+    // doesn't already match this frame; the returned AnalyzedFrame's
+    // Gray/HsvHistogram/Edges are always independently-allocated
+    // destination Mats, never views over scratchBgr, so overwriting
+    // scratchBgr on the next call can never corrupt an already-returned
+    // AnalyzedFrame.
+    public static AnalyzedFrame Create(FrameSample frame, Mat scratchBgr)
+    {
+        ArgumentNullException.ThrowIfNull(scratchBgr);
         if (frame.PixelFormat != FrameSamplePixelFormat.Bgr24)
         {
             throw new TransitionDetectionException(
                 $"AnalyzedFrame requires {nameof(FrameSamplePixelFormat.Bgr24)} frames; got {frame.PixelFormat}.");
         }
 
-        using var bgr = new Mat(frame.Height, frame.Width, MatType.CV_8UC3);
-        Marshal.Copy(frame.Buffer, 0, bgr.Data, frame.ByteLength);
+        if (scratchBgr.Empty() || scratchBgr.Rows != frame.Height || scratchBgr.Cols != frame.Width || scratchBgr.Type() != MatType.CV_8UC3)
+        {
+            scratchBgr.Create(frame.Height, frame.Width, MatType.CV_8UC3);
+        }
+
+        Marshal.Copy(frame.Buffer, 0, scratchBgr.Data, frame.ByteLength);
+        var bgr = scratchBgr;
 
         var gray = new Mat();
         Cv2.CvtColor(bgr, gray, ColorConversionCodes.BGR2GRAY);
@@ -103,7 +137,7 @@ internal sealed class AnalyzedFrame : IDisposable
 
         var meanLuminance = Cv2.Mean(gray).Val0 / 255.0;
 
-        using var edges = new Mat();
+        var edges = new Mat();
         Cv2.Canny(gray, edges, CannyLowThreshold, CannyHighThreshold);
         var edgeDensity = Cv2.CountNonZero(edges) / (double)(edges.Rows * edges.Cols);
 
@@ -126,6 +160,7 @@ internal sealed class AnalyzedFrame : IDisposable
             frame.Timestamp,
             gray,
             histogram,
+            edges,
             meanLuminance,
             edgeDensity,
             laplacianVariance,
@@ -143,5 +178,6 @@ internal sealed class AnalyzedFrame : IDisposable
         _disposed = true;
         Gray.Dispose();
         HsvHistogram.Dispose();
+        Edges.Dispose();
     }
 }

@@ -3,6 +3,7 @@ using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 using System.Windows.Media.Imaging;
+using SceneForge.Core.Resources;
 using SceneForge.Media.Processes;
 using SceneForge.Media.Tooling;
 
@@ -13,23 +14,24 @@ namespace SceneForge.App.Services;
 // %LOCALAPPDATA%\SceneForge\ThumbnailCache, keyed by the source file's own
 // path/size/last-write-time plus the requested timestamp - so a cache entry
 // is never served for a source file that has since changed on disk.
-// Concurrency is capped by a fixed-size semaphore (never one ffmpeg process
-// per row spawned at once) and the cache directory itself is swept back to
-// a target size whenever it grows past a hard cap, so neither concurrent
-// process count nor disk usage is unbounded (CLAUDE.md rule 6/7).
+// Concurrency is capped via IAdaptiveResourceGovernor.MaxWorkers (never one
+// ffmpeg process per row spawned at once, and never more concurrent
+// processes than this machine has spare logical CPUs for) and the cache
+// directory itself is swept back to a target size whenever it grows past a
+// hard cap, so neither concurrent process count nor disk usage is unbounded
+// (CLAUDE.md rule 6/7).
 public sealed class ThumbnailCacheService : IThumbnailCacheService, IDisposable
 {
     private const int ThumbnailWidthPixels = 160;
-    private const int MaxConcurrentGenerations = 4;
     private const int MaxCachedThumbnailFiles = 4000;
     private const int SweepTargetFileCount = 3000;
 
     private readonly IFfmpegToolLocator _toolLocator;
     private readonly IProcessRunner _processRunner;
     private readonly string _cacheDirectory;
-    private readonly SemaphoreSlim _concurrencyLimiter = new(MaxConcurrentGenerations, MaxConcurrentGenerations);
+    private readonly SemaphoreSlim _concurrencyLimiter;
 
-    public ThumbnailCacheService(IFfmpegToolLocator toolLocator, IProcessRunner processRunner)
+    public ThumbnailCacheService(IFfmpegToolLocator toolLocator, IProcessRunner processRunner, IAdaptiveResourceGovernor resourceGovernor)
     {
         _toolLocator = toolLocator;
         _processRunner = processRunner;
@@ -38,6 +40,9 @@ public sealed class ThumbnailCacheService : IThumbnailCacheService, IDisposable
             "SceneForge",
             "ThumbnailCache");
         Directory.CreateDirectory(_cacheDirectory);
+
+        var maxConcurrentGenerations = resourceGovernor.MaxWorkers;
+        _concurrencyLimiter = new SemaphoreSlim(maxConcurrentGenerations, maxConcurrentGenerations);
     }
 
     public async Task<BitmapSource?> GetThumbnailAsync(string sourceVideoPath, TimeSpan timestamp, CancellationToken cancellationToken)

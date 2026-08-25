@@ -19,7 +19,7 @@ internal static class ClipFrameMetricsExtractor
     {
         ArgumentNullException.ThrowIfNull(current);
 
-        var edgeHistogram = EdgeHistogramExtractor.Extract(current.Gray);
+        var edgeHistogram = EdgeHistogramExtractor.ExtractFromEdges(current.Edges);
         var colorHistogram = ColorHistogramExtractor.Extract(current);
         var perceptualHash = PerceptualHashExtractor.Extract(current.Gray);
         var structuralDifference = previous is null ? 0.0 : StructuralDifference(previous, current);

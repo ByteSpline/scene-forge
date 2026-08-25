@@ -97,6 +97,48 @@ public class HardwareEncoderProbeTests
     }
 
     [Fact]
+    public async Task SelectEncoderAsync_CalledTwiceOnSameInstance_OnlyProbesOnce()
+    {
+        var processRunner = new FakeProcessRunner((request, _) => Task.FromResult(Result(0)));
+        var probe = new HardwareEncoderProbe(processRunner, new FakeFfmpegToolLocator());
+
+        var first = await probe.SelectEncoderAsync(CancellationToken.None);
+        var second = await probe.SelectEncoderAsync(CancellationToken.None);
+
+        Assert.Equal(first.Kind, second.Kind);
+        Assert.Single(processRunner.Requests);
+    }
+
+    [Fact]
+    public async Task SelectEncoderAsync_FirstAttemptThrows_SecondAttemptRetriesRatherThanCachingFailure()
+    {
+        var attempt = 0;
+        var processRunner = new FakeProcessRunner((request, _) =>
+        {
+            var encoder = EncoderNameFromRequest(request);
+            if (encoder == "h264_nvenc")
+            {
+                attempt++;
+                return attempt == 1
+                    ? throw new ProcessTimeoutException(TimeSpan.FromSeconds(15), string.Empty, string.Empty)
+                    : Task.FromResult(Result(0));
+            }
+
+            return Task.FromResult(Result(1));
+        });
+        var probe = new HardwareEncoderProbe(processRunner, new FakeFfmpegToolLocator());
+
+        // First call: NVENC smoke test throws (treated as failure, same as
+        // ProcessLaunchException), every other candidate fails too in this
+        // fake, so the whole probe throws and nothing is cached.
+        await Assert.ThrowsAsync<RenderExecutionException>(() => probe.SelectEncoderAsync(CancellationToken.None));
+
+        var second = await probe.SelectEncoderAsync(CancellationToken.None);
+
+        Assert.Equal(VideoEncoderKind.NvidiaNvenc, second.Kind);
+    }
+
+    [Fact]
     public async Task SelectEncoderAsync_PreCancelledToken_ThrowsOperationCanceledExceptionBeforeAnyCandidate()
     {
         var processRunner = new FakeProcessRunner((_, _) => Task.FromResult(Result(0)));

@@ -1,3 +1,4 @@
+using SceneForge.Core.Resources;
 using SceneForge.Infrastructure.Persistence;
 using SceneForge.Infrastructure.Tests.TestSupport;
 
@@ -12,7 +13,7 @@ public sealed class AutosaveServiceTests : IDisposable
     public AutosaveServiceTests()
     {
         _layout = new ProjectLayout(_fixture.Path);
-        _autosave = new AutosaveService(new ProjectStore(), _layout);
+        _autosave = new AutosaveService(new ProjectStore(), _layout, new AdaptiveResourceGovernor());
     }
 
     [Fact]

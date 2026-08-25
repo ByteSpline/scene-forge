@@ -113,5 +113,13 @@ public class AnalysisProgressViewModelTests
             IProgress<SceneForge.Media.Detection.TransitionDetectionProgress>? progress,
             CancellationToken cancellationToken) =>
             throw exception;
+
+        public Task<IReadOnlyList<SceneForge.Media.Detection.TransitionDetection>> DetectAsync(
+            string filePath,
+            SceneForge.Media.Domain.MediaInfo mediaInfo,
+            SceneForge.Media.Detection.TransitionDetectionOptions options,
+            IProgress<SceneForge.Media.Detection.TransitionDetectionProgress>? progress,
+            CancellationToken cancellationToken) =>
+            throw exception;
     }
 }

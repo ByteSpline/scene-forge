@@ -1,3 +1,4 @@
+using SceneForge.Core.Resources;
 using SceneForge.Media.Domain;
 using SceneForge.Media.Planning;
 using SceneForge.Media.Probing;
@@ -76,7 +77,7 @@ public sealed class FFmpegRenderServiceIntegrationTests : IDisposable
         };
 
         var renderPlan = new RenderPlanBuilder().Build(renderPlanRequest);
-        var renderService = new FFmpegRenderService(processRunner, toolLocator, ffprobeService);
+        var renderService = new FFmpegRenderService(processRunner, toolLocator, ffprobeService, new AdaptiveResourceGovernor());
 
         var progressUpdates = new List<RenderProgress>();
         var progress = new Progress<RenderProgress>(progressUpdates.Add);
@@ -125,7 +126,7 @@ public sealed class FFmpegRenderServiceIntegrationTests : IDisposable
         };
 
         var renderPlan = new RenderPlanBuilder().Build(renderPlanRequest);
-        var renderService = new FFmpegRenderService(processRunner, toolLocator, ffprobeService);
+        var renderService = new FFmpegRenderService(processRunner, toolLocator, ffprobeService, new AdaptiveResourceGovernor());
         var outputPath = Path.Combine(_outputDirectory, "rendered.mp4");
 
         await renderService.RenderAsync(renderPlan, outputPath, progress: null, CancellationToken.None);

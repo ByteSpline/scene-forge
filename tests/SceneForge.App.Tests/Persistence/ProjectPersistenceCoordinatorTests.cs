@@ -2,6 +2,7 @@ using System.IO;
 using SceneForge.App.Persistence;
 using SceneForge.App.Session;
 using SceneForge.App.Tests.TestSupport;
+using SceneForge.Core.Resources;
 using SceneForge.Infrastructure.Logging;
 using SceneForge.Infrastructure.Persistence;
 
@@ -34,7 +35,7 @@ public sealed class ProjectPersistenceCoordinatorTests : IDisposable
     {
         var layout = new ProjectLayout(_root);
         var projectStore = new ProjectStore();
-        var autosave = new AutosaveService(projectStore, layout);
+        var autosave = new AutosaveService(projectStore, layout, new AdaptiveResourceGovernor());
         var logger = new FakeAppLogger();
         var coordinator = new ProjectPersistenceCoordinator(
             projectStore,
@@ -70,7 +71,7 @@ public sealed class ProjectPersistenceCoordinatorTests : IDisposable
     {
         var layout = new ProjectLayout(_root);
         var projectStore = new ProjectStore();
-        var autosave = new AutosaveService(projectStore, layout);
+        var autosave = new AutosaveService(projectStore, layout, new AdaptiveResourceGovernor());
         var logger = new FakeAppLogger();
         var coordinator = new ProjectPersistenceCoordinator(
             projectStore,

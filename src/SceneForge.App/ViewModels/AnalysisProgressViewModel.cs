@@ -100,7 +100,7 @@ public sealed partial class AnalysisProgressViewModel : ObservableObject, IDispo
                 TransitionsFound = p.RawCandidatesSoFar;
                 StatusText = $"Detecting scene transitions... {FormatClock(p.LastSourceTimestamp)} analyzed";
             });
-            var detections = await _transitionDetector.DetectAsync(videoPath, detectionOptions, detectionProgress, cancellationToken)
+            var detections = await _transitionDetector.DetectAsync(videoPath, _session.VideoMediaInfo!, detectionOptions, detectionProgress, cancellationToken)
                 .ConfigureAwait(true);
             _session.Detections = detections;
 
@@ -117,7 +117,7 @@ public sealed partial class AnalysisProgressViewModel : ObservableObject, IDispo
                 ClipsAccepted = p.ClipsAcceptedSoFar;
                 StatusText = $"Extracting clean clip candidates... {FormatClock(p.LastSourceTimestamp)} analyzed";
             });
-            var extractionResult = await _cleanClipExtractor.ExtractAsync(videoPath, extractionOptions, extractionProgress, cancellationToken)
+            var extractionResult = await _cleanClipExtractor.ExtractAsync(videoPath, _session.VideoMediaInfo!, extractionOptions, extractionProgress, cancellationToken)
                 .ConfigureAwait(true);
             _session.ExtractionResult = extractionResult;
             ClipsAccepted = extractionResult.AcceptedClips.Count;

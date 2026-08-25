@@ -30,6 +30,7 @@ public static class CommandDispatcher
                 "evaluate" => await EvaluateCommand.RunAsync(options, cancellationToken).ConfigureAwait(false),
                 "gate" => await GateCommand.RunAsync(options, cancellationToken).ConfigureAwait(false),
                 "update-baseline" => await UpdateBaselineCommand.RunAsync(options, cancellationToken).ConfigureAwait(false),
+                "profile-pipeline" => await ProfilePipelineCommand.RunAsync(options, cancellationToken).ConfigureAwait(false),
                 _ => Unknown(command),
             };
         }
@@ -55,5 +56,6 @@ public static class CommandDispatcher
         Console.WriteLine("  evaluate         [--profile Fast|Balanced|Accurate] [--report <json>] [--ffmpeg-base-dir <dir>]");
         Console.WriteLine("  gate             --baseline <path> [...evaluate options]");
         Console.WriteLine("  update-baseline  --output <path> [...evaluate options]");
+        Console.WriteLine("  profile-pipeline [--input <video>] [--profile Fast|Balanced|Accurate|All] [--report <json>] [--source-cache <path>] [--regenerate-source true] [--ffmpeg-base-dir <dir>]");
     }
 }

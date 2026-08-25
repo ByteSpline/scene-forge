@@ -111,6 +111,50 @@ public class TransitionDetectorTests
         Assert.Equal(3, reports[^1].FramesAnalyzed);
     }
 
+    [Fact]
+    public async Task DetectAsync_GivenMediaInfo_NeverProbesInternally()
+    {
+        var frames = BuildFrames((10, 10, 10, 4));
+        var sampler = FakeFrameSampler.ReturningFrames(() => frames);
+        var ffprobe = FakeFfprobeService.ReturningMediaInfo(CreateMediaInfo(TimeSpan.FromSeconds(2)));
+        var detector = new TransitionDetector(sampler, ffprobe);
+
+        var results = await detector.DetectAsync(
+            "input.mp4",
+            CreateMediaInfo(TimeSpan.FromSeconds(2)),
+            TransitionDetectionOptions.ForProfile(AnalysisProfile.Fast),
+            null,
+            CancellationToken.None);
+
+        Assert.Empty(results);
+        Assert.Equal(0, ffprobe.ProbeCallCount);
+    }
+
+    [Fact]
+    public async Task DetectAsync_GivenMediaInfoWithNoVideoStream_ThrowsWithoutInvokingFrameSampler()
+    {
+        var mediaInfo = new MediaInfo
+        {
+            FilePath = "audio.mp4",
+            FormatName = "wav",
+            Duration = TimeSpan.FromSeconds(1),
+            VideoStreams = [],
+            AudioStreams = [],
+        };
+        var sampler = FakeFrameSampler.ReturningFrames(() => throw new InvalidOperationException("Frame sampler must not be invoked when there is no video stream."));
+        var ffprobe = FakeFfprobeService.ReturningMediaInfo(mediaInfo);
+        var detector = new TransitionDetector(sampler, ffprobe);
+
+        await Assert.ThrowsAsync<TransitionDetectionException>(() => detector.DetectAsync(
+            "audio.mp4",
+            mediaInfo,
+            TransitionDetectionOptions.ForProfile(AnalysisProfile.Fast),
+            null,
+            CancellationToken.None));
+
+        Assert.Equal(0, ffprobe.ProbeCallCount);
+    }
+
     private static List<FrameSample> BuildFrames(params (byte B, byte G, byte R, int Count)[] segments)
     {
         var frames = new List<FrameSample>();
