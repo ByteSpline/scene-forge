@@ -1,0 +1,86 @@
+<Window x:Class="SceneForge.App.Views.StartupDiagnosticsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        mc:Ignorable="d"
+        Title="SceneForge — Startup Diagnostics"
+        Width="640" Height="520"
+        WindowStartupLocation="CenterScreen"
+        ResizeMode="NoResize"
+        ShowInTaskbar="True"
+        Background="{DynamicResource Brush.WindowBackground}">
+    <Grid Margin="24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Margin="0,0,0,12">
+            <TextBlock Text="Checking required components" Style="{StaticResource Heading1}" />
+            <TextBlock Text="SceneForge verifies FFmpeg, the Visual C++ runtime, and OpenCV before allowing analysis to start. This runs on every launch, not just the first."
+                       Style="{StaticResource Caption}"
+                       Margin="0,0,0,12" />
+            <ProgressBar IsIndeterminate="True"
+                         Visibility="{Binding IsRunning, Converter={StaticResource NullToVisibilityConverter}}"
+                         AutomationProperties.Name="Checking required components" />
+        </StackPanel>
+
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+            <ItemsControl ItemsSource="{Binding Results}">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <Border Style="{StaticResource Card}" Margin="0,0,0,8">
+                            <StackPanel>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="{Binding ComponentName}" Style="{StaticResource Heading2}" Margin="0" />
+                                    <TextBlock Grid.Column="1" Text="Passed" FontWeight="SemiBold" VerticalAlignment="Top">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+                                                <Setter Property="Foreground" Value="{DynamicResource Brush.Success}" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding IsAvailable}" Value="False">
+                                                        <Setter Property="Text" Value="Failed" />
+                                                        <Setter Property="Foreground" Value="{DynamicResource Brush.Error}" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                </Grid>
+                                <TextBlock Text="{Binding Detail}" TextWrapping="Wrap" Margin="0,4,0,0" />
+                                <TextBlock Text="{Binding RemediationGuidance}"
+                                           Style="{StaticResource ErrorText}"
+                                           TextWrapping="Wrap"
+                                           Margin="0,4,0,0"
+                                           Visibility="{Binding RemediationGuidance, Converter={StaticResource NullToVisibilityConverter}}" />
+                            </StackPanel>
+                        </Border>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </ScrollViewer>
+
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+            <Button Content="Exit"
+                    Style="{StaticResource SecondaryButton}"
+                    Click="OnExitClick"
+                    Margin="0,0,8,0"
+                    AutomationProperties.Name="Exit SceneForge" />
+            <Button Content="Retry"
+                    Style="{StaticResource SecondaryButton}"
+                    Command="{Binding RetryCommand}"
+                    Margin="0,0,8,0"
+                    AutomationProperties.Name="Retry the startup diagnostics" />
+            <Button Content="Continue"
+                    Click="OnContinueClick"
+                    IsEnabled="{Binding AllPassed}"
+                    AutomationProperties.Name="Continue to SceneForge" />
+        </StackPanel>
+    </Grid>
+</Window>
