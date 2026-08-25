@@ -58,11 +58,20 @@ public sealed class SyntheticProfilingSourceBuilder
     private static readonly TimeSpan SegmentEncodeTimeout = TimeSpan.FromMinutes(15);
 
     private readonly string _ffmpegPath;
-    private readonly ProcessRunner _processRunner = new();
+    private readonly IProcessRunner _processRunner;
 
     public SyntheticProfilingSourceBuilder(string ffmpegPath)
+        : this(ffmpegPath, new ProcessRunner())
+    {
+    }
+
+    // Accepts an injected IProcessRunner so BuildAsync's cache-write
+    // atomicity (see ConcatAsync's own remarks) is unit-testable against a
+    // fake without spawning real ffmpeg.
+    internal SyntheticProfilingSourceBuilder(string ffmpegPath, IProcessRunner processRunner)
     {
         _ffmpegPath = ffmpegPath;
+        _processRunner = processRunner;
     }
 
     // Total planned duration if every segment encodes to exactly its
@@ -149,24 +158,53 @@ public sealed class SyntheticProfilingSourceBuilder
         return outputPath;
     }
 
+    // Writes ffmpeg's concat output to a ".tmp-<guid>" path next to
+    // outputPath (same directory, so the final File.Move is a same-volume
+    // rename, not a cross-volume copy+delete - same convention
+    // ThumbnailCacheService.TryGenerateAsync already uses) and only moves it
+    // into the real, persistently-cached outputPath once ffmpeg has exited
+    // successfully. This matters because outputPath is the exact path
+    // BuildAsync's own "already built, reuse it" check
+    // (File.Exists(outputPath)) trusts on every future call - if ffmpeg's
+    // own output argument were outputPath directly, a cancellation, crash,
+    // or timeout mid-write would leave a truncated file sitting there, and
+    // every subsequent BuildAsync call would silently treat that corrupt
+    // file as a complete, valid cached source (CLAUDE.md rule 10: nothing
+    // about this should be silent). The temp file is cleaned up on any
+    // failure path too, so a failed build never leaves stray partial output
+    // next to the cache path either.
     private async Task ConcatAsync(IReadOnlyList<string> segments, string outputPath, string workingDirectory, CancellationToken cancellationToken)
     {
-        if (File.Exists(outputPath))
-        {
-            File.Delete(outputPath);
-        }
-
         var listPath = Path.Combine(workingDirectory, "concat.txt");
         var listContents = string.Join('\n', segments.Select(s => $"file '{s.Replace("'", "'\\''")}'"));
         await File.WriteAllTextAsync(listPath, listContents, cancellationToken).ConfigureAwait(false);
 
-        var arguments = new List<string>
+        var outputDirectory = Path.GetDirectoryName(Path.GetFullPath(outputPath)) ?? ".";
+        var tempOutputPath = Path.Combine(outputDirectory, $"{Path.GetFileNameWithoutExtension(outputPath)}.tmp-{Guid.NewGuid():N}.mp4");
+        try
         {
-            "-y", "-hide_banner", "-loglevel", "error",
-            "-f", "concat", "-safe", "0", "-i", listPath,
-            "-c", "copy", outputPath,
-        };
-        await RunFfmpegAsync("concat", arguments, TimeSpan.FromMinutes(2), cancellationToken).ConfigureAwait(false);
+            var arguments = new List<string>
+            {
+                "-y", "-hide_banner", "-loglevel", "error",
+                "-f", "concat", "-safe", "0", "-i", listPath,
+                "-c", "copy", tempOutputPath,
+            };
+            await RunFfmpegAsync("concat", arguments, TimeSpan.FromMinutes(2), cancellationToken).ConfigureAwait(false);
+
+            if (File.Exists(outputPath))
+            {
+                File.Delete(outputPath);
+            }
+
+            File.Move(tempOutputPath, outputPath);
+        }
+        finally
+        {
+            if (File.Exists(tempOutputPath))
+            {
+                File.Delete(tempOutputPath);
+            }
+        }
     }
 
     private async Task RunFfmpegAsync(string id, IReadOnlyList<string> arguments, TimeSpan timeout, CancellationToken cancellationToken)

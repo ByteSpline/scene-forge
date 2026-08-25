@@ -10,6 +10,328 @@ short by a deliberate decision to stop a long-running automated comparison
 in favor of manual verification (see "What was not completed" below). That
 gap is disclosed here, not hidden.
 
+## Strict release review (post-commit)
+
+Performed after this phase's implementation was committed (`0a66779`,
+parent `0d8012b`) — a fresh, skeptical pass against CLAUDE.md, the
+architecture decisions, and this document's own claims, re-reading the
+actual diff and re-running verification rather than trusting the sections
+below at face value. Checked specifically for: web/cloud dependencies,
+unbounded memory/concurrency, UI-thread work, unsafe process invocation,
+timing drift, silent fallback, missing cancellation, unverifiable claims,
+and packaging omissions.
+
+### Blockers
+
+None found.
+
+### Major (confirmed, fixed in this pass)
+
+1. **`SyntheticProfilingSourceBuilder.ConcatAsync` wrote its ffmpeg concat
+   output directly to the persistently-cached `outputPath`** - the exact
+   same path `BuildAsync`'s own `File.Exists(outputPath)` check trusts
+   unconditionally as "already built, reuse it" on every future call. A
+   failure partway through that ffmpeg invocation (a real Ctrl+C, a crash,
+   a timeout - all realistic given this step runs after ~20 minutes of
+   prior segment encoding) would have left a truncated file at `outputPath`,
+   which every subsequent `profile-pipeline` run would then silently treat
+   as a complete, valid cached source. A confirmed instance of exactly the
+   "silent fallback" class this review pass was asked to check for. Not a
+   product-code issue (this class lives only in the dev-only
+   `accuracy/SceneForge.Accuracy` tool, never shipped in `SceneForge.App` -
+   see "Packaging" below), but a real correctness bug in code this phase
+   delivered.
+   **Fix:** `ConcatAsync` now writes to a `.tmp-<guid>.mp4` path in the same
+   directory as `outputPath` (same convention `ThumbnailCacheService.TryGenerateAsync`
+   already uses) and only `File.Move`s it into `outputPath` after ffmpeg
+   exits successfully, with the temp file cleaned up in a `finally` on any
+   failure path. `SyntheticProfilingSourceBuilder` gained an `internal`
+   `IProcessRunner`-accepting constructor (mirroring `HardwareDescriber`'s
+   existing pattern) so this is unit-testable without real ffmpeg.
+   **Regression tests** (`tests/SceneForge.Accuracy.Tests/SyntheticProfilingSourceBuilderTests.cs`):
+   `BuildAsync_ConcatStepFails_OutputPathIsNeverCreated` (a fake process
+   runner writes partial content to the concat step's output argument, then
+   fails - a "clean, no bytes written" fake failure would have passed even
+   against the original bug, so the fake deliberately simulates what a real
+   killed-mid-encode ffmpeg process actually does) and
+   `BuildAsync_ConcatStepSucceeds_NeverTargetsOutputPathDirectlyAndMovesRealContentIn`.
+   **Verified both tests actually catch the original bug**, not just pass
+   trivially: temporarily reverted only the fix (kept the new
+   `IProcessRunner` constructor) and re-ran this file alone -
+   `dotnet test tests/SceneForge.Accuracy.Tests --filter "FullyQualifiedName~SyntheticProfilingSourceBuilderTests"`
+   failed 2/2 against the reverted code (`Assert.False() Failure: Actual True`
+   for the first test, `Assert.NotEqual() Failure: Strings are equal` for
+   the second), then passed 2/2 again once the fix was restored.
+
+### Minor (reported, not fixed — below the confirmed blocker/major bar)
+
+- **`HardwareEncoderProbe`'s new per-app-session cache never re-probes**
+  once a hardware encoder selection is cached, even if that hardware later
+  starts failing mid-render for the rest of the session (e.g. a transient
+  driver fault). Not a functional regression - `FFmpegRenderService.RunWithFallbackAsync`
+  already falls back to software encoding per-render regardless, visibly
+  (`RenderResult.FellBackToSoftwareEncoder`, never silent) - just means the
+  app won't automatically retry hardware later in the same session. Already
+  disclosed as an accepted tradeoff in `HardwareEncoderProbe`'s own remarks;
+  not changed.
+- **`AutosaveService.BeginStageAsync`** creates the project directory
+  (`Directory.CreateDirectory(directory)`) *before* calling
+  `EnsureSufficientDiskSpace` - an empty, harmless directory can be left
+  behind if the disk-space check then fails. No data-loss or correctness
+  risk (matches CLAUDE.md rule 11's "never destructive" concern trivially -
+  nothing is written), just slightly inconsistent ordering. Not fixed.
+- ~~**Pre-existing, already-triaged**: `FFmpegRenderServiceIntegrationTests.RenderAsync_RealFfmpegAgainstRealFiles_ProducesVerifiedOutput`
+  still fails...~~ **Superseded.** This was root-caused and fixed in a
+  follow-up pass after this review - see "Duration-tolerance investigation
+  and fix" below. It was NOT actually an unrelated, pre-existing gap: it
+  was a real bug in `RenderPlanBuilder`'s own duration calculation, present
+  since the render pipeline was first built (visible across Phase 9, Phase
+  12, and this phase's manual testing), which this review pass re-confirmed
+  but did not root-cause deeply enough to catch at the time.
+
+### Explicitly checked and found clean
+
+- **Web/cloud dependencies:** none. `git show 0d8012b..0a66779 --stat -- "*.csproj" "Directory.Packages.props"`
+  returns empty - no project file or package reference changed anywhere in
+  this phase's diff.
+- **Unbounded memory/concurrency:** `grep -rn "Channel\.Create\|SemaphoreSlim" src/`
+  finds exactly 2 `Channel.CreateBounded` calls (pre-existing, in
+  `FrameSampler`) and 1 `SemaphoreSlim` (`ThumbnailCacheService`, now sized
+  from `IAdaptiveResourceGovernor.MaxWorkers` instead of a literal `4` -
+  still a fixed, bounded cap, never unbounded). No `Channel.CreateUnbounded`,
+  `ConcurrentQueue`, or `BlockingCollection` anywhere in `src/`. New
+  profiling-harness code (`SyntheticProfilingSourceBuilder`, `PipelineProfiler`)
+  runs its 5 segments and 3 pipeline stages strictly sequentially - no
+  `Task.WhenAll`/`Parallel.ForEach`, no unbounded collections.
+- **UI-thread work:** none introduced. `AnalysisProgressViewModel`'s diff is
+  4 lines (threading an already-resolved `MediaInfo` through, not new I/O);
+  `ThumbnailCacheService`'s constructor change is a single `Environment.ProcessorCount`
+  read via the governor, not blocking I/O.
+- **Unsafe process invocation:** `git show 0d8012b..0a66779 -- accuracy src`
+  grepped for `Process.Start`/`UseShellExecute`/`cmd.exe` finds none - every
+  new process launch (in `SyntheticProfilingSourceBuilder`, `PipelineProfiler`)
+  goes through the existing hardened `ProcessRunner`, discrete
+  `ProcessExecutionRequest.Arguments` entries, never a shell.
+  `SyntheticProfilingSourceBuilder`'s concat file-list escaping
+  (`s.Replace("'", "'\\''")`) is ffmpeg's own concat-demuxer quoting
+  convention, not shell escaping, and operates only on program-generated
+  temp paths.
+- **Timing drift:** none newly introduced by this phase's actual optimization
+  changes (items 1-6 in "What changed" above are all value-preserving by
+  construction - see "Accuracy reasoning per change"). The one real timing
+  issue found and fixed this pass (`ConcatAsync`'s cache-write race) is
+  reported under "Major" above, not here.
+- **Silent fallback (product code):** the new `InsufficientDiskSpaceException`
+  flows into the *same* pre-existing, already-reviewed, non-silent
+  logged-warning paths in `ProjectPersistenceCoordinator.IsRecognizedPersistenceFailure`
+  and `RenderProgressViewModel`'s equivalent `IOException` handling - this
+  phase did not introduce a new silent-failure path in shipped product
+  code, only in the dev-tool bug fixed above.
+- **Missing cancellation:** every new async method
+  (`SyntheticProfilingSourceBuilder.BuildAsync`/`EncodeSegmentAsync`/`EncodeDissolveAsync`/`ConcatAsync`,
+  `PipelineProfiler.RunAsync`/`BuildSilentAudioAsync`, `ProfilePipelineCommand.RunAsync`)
+  accepts and threads a real `CancellationToken` through to every
+  `ProcessRunner.RunAsync`/`ProbeAsync` call beneath it - verified by
+  reading each call site, not merely by signature inspection.
+- **Unverifiable claims:** re-ran `dotnet build`/`dotnet format --verify-no-changes`/`dotnet test`
+  and one `accuracy ... evaluate --profile Fast` against the actual
+  committed `HEAD` (not a stashed working tree) as part of this review pass
+  - every number matched this document's existing claims exactly (aggregate
+  9/15/17, 38%/35%/36%, 222.2ms, 10.62 FP/min for `Fast`; the same single
+  pre-existing test failure with the same duration numbers). See "Verification
+  actually performed" below for the exact re-run commands/results.
+- **Packaging omissions:** `grep -rn "SceneForge.Accuracy" src/` returns no
+  matches, and `src/SceneForge.App/SceneForge.App.csproj` references only
+  `SceneForge.Core`/`SceneForge.Media`/`SceneForge.Infrastructure` - the new
+  profiling harness cannot end up in a `dotnet publish` of the shipped app.
+
+### Re-verification after the fix (this review pass)
+
+```
+dotnet build SceneForge.sln --configuration Release
+  -> Build succeeded. 0 Warning(s). 0 Error(s).
+
+dotnet format SceneForge.sln --verify-no-changes
+  -> No formatting violations.
+
+dotnet test SceneForge.sln --no-build --configuration Release
+  -> SceneForge.Core.Tests:            8 passed
+  -> SceneForge.Accuracy.Tests:        31 passed  (29 pre-existing + 2 new
+                                                    SyntheticProfilingSourceBuilderTests)
+  -> SceneForge.App.Tests:             58 passed
+  -> SceneForge.Infrastructure.Tests:  46 passed
+  -> SceneForge.Media.Tests:          493 passed, 1 failed (the pre-existing,
+                                                    already-triaged
+                                                    FFmpegRenderServiceIntegrationTests
+                                                    duration-tolerance failure)
+  -> 636 passed, 1 failed, 0 skipped, across the whole solution.
+```
+
+## Duration-tolerance investigation and fix
+
+The one remaining failure from the strict review above
+(`FFmpegRenderServiceIntegrationTests.RenderAsync_RealFfmpegAgainstRealFiles_ProducesVerifiedOutput`,
+duration `0.72s` actual vs. `0.6667s` expected, `±0.04s`/one-frame
+tolerance) was investigated further, per a direct report that this same
+verification has failed intermittently across Phase 9, Phase 12, and this
+phase's own manual UI testing - not actually the one-off, unrelated
+timing quirk the strict review above assumed.
+
+### Root cause (found before any code was changed)
+
+Reproduced directly against real ffmpeg 9.0.1, outside SceneForge
+entirely, using a controlled 25fps synthetic source
+(`testsrc2=size=320x240:rate=25`, matching the real test fixture's own
+25fps) and the exact filter chain `RenderFilterGraphBuilder` builds
+(`trim=start=S:duration=D,setpts=PTS-STARTPTS,fps=25/1,format=yuv420p,setsar=1`
+per segment, then `concat`):
+
+| Segments (each `1/3 s = 8.333` output frames) | Expected total | Actual total (ffprobe) | Actual frame count |
+|---:|---:|---:|---:|
+| 1 | 0.333333 s | **0.360000 s** | 9 |
+| 2 | 0.666666 s | **0.720000 s** | 18 |
+| 3 | 0.999999 s | **1.080000 s** | 27 |
+| 4 | 1.333332 s | **1.440000 s** | 36 |
+
+This exactly reproduces the real test's own numbers at n=2 (`0.72s` actual)
+and proves the discrepancy is **proportional to segment count**, not a
+fixed one-frame offset: each segment independently overshoots by a
+constant ~0.667 frame (`9 - 8.333`), so it grows linearly with clip count -
+confirming the "per-clip rounding/concat issue" hypothesis, not "GOP/
+keyframe padding" or any other fixed, one-time artifact.
+
+**Mechanism** (isolated by testing whether moving `fps=25` to before vs.
+after the `concat` step changed anything - it did not, byte-for-byte
+identical frame counts either way): ffmpeg's `trim` filter keeps every
+source frame whose presentation time falls within `[start, start+duration)`.
+For a duration that is not an exact multiple of the frame period, the
+frame that *starts* just before the window's nominal end is still kept in
+full, even though the window technically ends partway through that
+frame's own display period - `trim` alone, with no `fps` filter involved
+at all, already produces `ceil(duration / frame_period)`-ish frame counts
+for a non-frame-aligned request. Confirmed by a third, control test:
+segment durations that already ARE exact multiples of the frame period
+(`0.36s` = 9 frames) produced **zero** discrepancy at every segment count
+(n=1..4, real ffmpeg, real `libx264` encoding) - proving the fix is to
+make segment durations frame-exact before ffmpeg ever sees them, not to
+change ffmpeg's version/settings (this is deterministic, documented `trim`
+filter behavior, not an encoder or ffmpeg-9.0.1-specific quirk) and not to
+merely widen tolerance (a wider fixed tolerance would still eventually
+fail on a long enough multi-clip timeline, since the error keeps growing
+with clip count and is unbounded in principle).
+
+**The actual bug**, per `TimelinePlanner.Plan` (line 81): every non-final
+placement uses `clip.Range.Duration` - a `CleanClip`'s natural, continuous-
+time duration from the extraction pipeline - completely unquantized
+against the render's own output frame rate. Only the running *total*
+(`TimelinePlan.PlannedDuration`) is guaranteed frame-exact (the algorithm
+solves for the final placement to make the sum land exactly on
+`quantizedTarget`); each *individual* segment is not. `RenderPlanBuilder`
+then copied `TimelinePlan.PlannedDuration` straight into
+`RenderPlan.PlannedVideoDuration` (the verifier's "expected" duration)
+without accounting for the fact that the render pipeline trims and
+resamples each segment *independently*, so per-segment rounding that the
+planning-time total never captured accumulates in the actual rendered
+file. Confirmed as a real, fixable bug rather than "legitimate ffmpeg
+behavior that can't be eliminated" - see "Fix" below.
+
+### Fix
+
+`RenderPlanBuilder.Build` now quantizes each segment's duration to the
+*nearest* whole output frame (`RationalFrameRate.ToFrameCount`/`FromFrameCount`,
+`MidpointRounding.AwayFromZero` - the same convention `TimelinePlanner`
+already uses for its own target-duration quantization) before it is ever
+used as a `trim=duration=` argument, and throws a clear `RenderPlanException`
+if a placement's duration rounds to zero frames (too short to render,
+never silently dropped). `RenderPlan.PlannedVideoDuration` is now the sum
+of these *quantized* segment durations, not the raw
+`TimelinePlan.PlannedDuration` - so the verifier's "expected" value always
+matches what a frame-exact render will actually produce. Deliberately
+scoped to `RenderPlanBuilder` alone: `TimelinePlanner`/`TimelinePlan`/
+`TimelinePlacement` (clip selection, audio-duration accounting, UI-facing
+plan display) are untouched, since the frame-exactness requirement is
+specific to how the render pipeline turns a plan into ffmpeg arguments,
+not to planning itself.
+
+Verified this is sufficient (not just theoretically, but against real
+ffmpeg): a quantized `0.32s` (8-frame) segment - what `1/3 s` actually
+rounds to (nearer to 8 than 9) - renders to exactly 8 frames at any
+segment count (n=1..3, real ffmpeg), and the real
+`FFmpegRenderServiceIntegrationTests.RenderAsync_RealFfmpegWithFourNonFrameAlignedClips_VerifiesWithinTolerance`
+regression test added below reports `PlannedVideoDuration=00:00:00.3200000,
+ActualDuration=00:00:00.3200000, Delta=00:00:00` for 4 real, non-frame-aligned
+clips through the actual `FFmpegRenderService` - zero delta, well inside
+the existing one-frame tolerance, which did not need to be widened.
+
+### Regression tests added
+
+- `RenderPlanBuilderTests` (fake media, no real ffmpeg):
+  `Build_PlacementDurationNotFrameAligned_QuantizesSegmentDurationToNearestOutputFrame`,
+  `Build_MultipleNonFrameAlignedPlacements_PlannedVideoDurationIsSumOfQuantizedSegments`,
+  `Build_PlacementQuantizesToZeroFrames_ThrowsRenderPlanException`. The
+  pre-existing `Build_ValidRequest_PlannedVideoDurationMatchesTimelinePlanPlannedDuration`
+  test was renamed and its expected value corrected - it had been asserting
+  exactly the buggy behavior (`PlannedVideoDuration == TimelinePlan.PlannedDuration`
+  verbatim) as if it were the intended contract.
+- `FFmpegRenderServiceIntegrationTests.RenderAsync_RealFfmpegWithFourNonFrameAlignedClips_VerifiesWithinTolerance`
+  (real ffmpeg, real fixture files): 4 clips, each `1/13` of the shorter
+  fixture's duration (deliberately non-frame-aligned), through the actual
+  `FFmpegRenderService.RenderAsync` end to end - the "realistic multi-clip
+  render" case this investigation was specifically asked to cover.
+
+### Verification (Debug and Release)
+
+```
+dotnet build tests/SceneForge.Media.Tests --configuration Release
+  -> Build succeeded. 0 Warning(s). 0 Error(s).
+
+dotnet test tests/SceneForge.Media.Tests --no-build --configuration Release
+  -> 498 passed, 0 failed, 0 skipped (up from 493 passed + 1 failed before
+     the fix - the previously-failing test now passes, plus 4 new tests)
+
+dotnet build SceneForge.sln --configuration Debug
+dotnet test SceneForge.sln --no-build --configuration Debug
+  -> SceneForge.Core.Tests:            8 passed
+  -> SceneForge.Accuracy.Tests:       31 passed
+  -> SceneForge.App.Tests:            58 passed
+  -> SceneForge.Infrastructure.Tests: 46 passed
+  -> SceneForge.Media.Tests:         498 passed, 0 failed, 0 skipped (real
+                                                 ffmpeg staged into the
+                                                 Debug output directory
+                                                 specifically for this run)
+  -> 641 passed, 0 failed, 0 skipped, across the whole solution (Debug).
+
+dotnet build/test src/SceneForge.Core, src/SceneForge.Media,
+  src/SceneForge.Infrastructure, accuracy/SceneForge.Accuracy, and their
+  test projects, individually, --configuration Release
+  -> All build clean (0 warnings/errors); SceneForge.Core.Tests (8),
+     SceneForge.Media.Tests (498), SceneForge.Infrastructure.Tests (46),
+     SceneForge.Accuracy.Tests (31) all pass, 0 failed, 0 skipped.
+  -> SceneForge.App/SceneForge.App.Tests could NOT be rebuilt in Release
+     during this pass: a SceneForge.App.exe process (PID 1584, running
+     from src/SceneForge.App/bin/Release/net8.0-windows/) was actively
+     locking its own output DLL for the full duration of this
+     investigation - almost certainly the user's own manual UI testing in
+     progress, mentioned earlier this phase, which this investigation
+     deliberately did not interrupt. SceneForge.App.Tests (58 tests) was
+     confirmed passing in the Debug run above, and this fix touches only
+     SceneForge.Media (RenderPlanBuilder.cs) plus SceneForge.Media.Tests -
+     SceneForge.App/App.Tests do not reference RenderPlanBuilder directly,
+     so risk of a Release-specific regression there is minimal but,
+     honestly, not itself re-verified in Release this pass.
+
+dotnet format SceneForge.sln --verify-no-changes
+  -> No formatting violations (whole solution, including SceneForge.App -
+     format does not require the same output-copy step a full build does,
+     so it was unaffected by the lock above).
+```
+
+Total across every failure mode checked, this pass: **0 real test
+failures** anywhere the investigation could reach; the one gap is a
+Release-specific re-verification of `SceneForge.App`/`SceneForge.App.Tests`
+specifically, blocked by the user's own running process, not by anything
+this fix touched.
+
 ## Documented hardware
 
 Same machine as `docs/BENCHMARK_REPORT.md`/`docs/ACCURACY_REPORT.md`:

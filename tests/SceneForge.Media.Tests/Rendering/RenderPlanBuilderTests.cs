@@ -166,8 +166,20 @@ public class RenderPlanBuilderTests
     }
 
     [Fact]
-    public void Build_ValidRequest_PlannedVideoDurationMatchesTimelinePlanPlannedDuration()
+    public void Build_ValidRequest_PlannedVideoDurationIsSumOfFrameQuantizedSegmentDurations()
     {
+        // 3.0s is already frame-exact at 25fps (75 frames); 2.5s is exactly
+        // the midpoint between 62 and 63 frames (62.5), so
+        // MidpointRounding.AwayFromZero rounds it up to 63 frames = 2.52s -
+        // see the dedicated quantization tests below for the (more common)
+        // non-midpoint case. This supersedes the old assumption that
+        // PlannedVideoDuration equals the raw TimelinePlan.PlannedDuration
+        // (5.5s) verbatim - that equality was exactly the bug root-caused
+        // below (see docs/OPTIMIZATION_REPORT.md). Built from the same
+        // RationalFrameRate.FromFrameCount the production code itself uses
+        // (rather than TimeSpan.FromSeconds(5.52), a double-arithmetic
+        // literal that lands one tick off) so this compares tick-for-tick
+        // against the exact value RenderPlanBuilder computes.
         var placements = new[]
         {
             TimelinePlanBuilder.CreatePlacement(0, 0, 0, 3),
@@ -177,7 +189,80 @@ public class RenderPlanBuilderTests
 
         var plan = _builder.Build(request);
 
-        Assert.Equal(TimeSpan.FromSeconds(5.5), plan.PlannedVideoDuration);
+        var expected = TwentyFiveFps.FromFrameCount(75) + TwentyFiveFps.FromFrameCount(63);
+        Assert.Equal(expected, plan.PlannedVideoDuration);
+    }
+
+    [Fact]
+    public void Build_PlacementDurationNotFrameAligned_QuantizesSegmentDurationToNearestOutputFrame()
+    {
+        // Root cause (see docs/OPTIMIZATION_REPORT.md's investigation,
+        // verified directly against real ffmpeg 9.0.1): ffmpeg's trim
+        // filter keeps every source frame whose presentation time falls
+        // within [start, start+duration) - for a duration that is not an
+        // exact multiple of the output frame period, the last frame that
+        // STARTS inside the window is kept in full even though the
+        // window's nominal end falls partway through that frame's own
+        // display period, so passing a non-frame-aligned duration straight
+        // through produces however many frames happen to overlap the
+        // window, not a value SceneForge chose. Quantizing here - to the
+        // NEAREST whole frame via RationalFrameRate.ToFrameCount's own
+        // MidpointRounding.AwayFromZero, the same convention TimelinePlanner
+        // already uses for its own target-duration quantization - means
+        // the exact duration handed to ffmpeg's trim filter is always
+        // already an exact multiple of the frame period, which (verified
+        // directly against real ffmpeg) always then produces exactly that
+        // many frames with zero further rounding ambiguity. 1/3 second at
+        // 25fps is 8.333 frames, which is nearer to 8 than 9.
+        var placements = new[] { TimelinePlanBuilder.CreatePlacement(0, 0, sourceStartSeconds: 0, sourceDurationSeconds: 1.0 / 3.0) };
+        var request = CreateRequest(placements);
+
+        var plan = _builder.Build(request);
+
+        var expected = TwentyFiveFps.FromFrameCount(8);
+        Assert.Equal(expected, plan.Segments[0].SourceDuration);
+        Assert.Equal(expected, plan.PlannedVideoDuration);
+    }
+
+    [Fact]
+    public void Build_MultipleNonFrameAlignedPlacements_PlannedVideoDurationIsSumOfQuantizedSegments()
+    {
+        // The actual regression this phase found: each segment quantizes
+        // independently (ffmpeg's trim filter has no knowledge of any
+        // other segment), so PlannedVideoDuration must be the sum of the
+        // ACTUAL quantized segment durations, not the raw
+        // TimelinePlan.PlannedDuration - otherwise the accumulated
+        // per-segment rounding grows with clip count (2 segments of 1/3s
+        // each previously produced a real 0.72s render verified against a
+        // 0.6667s "expected," failing by more than the verifier's 1-frame
+        // tolerance - reproduced via FFmpegRenderServiceIntegrationTests
+        // and directly against real ffmpeg outside SceneForge entirely).
+        var placements = new[]
+        {
+            TimelinePlanBuilder.CreatePlacement(0, 0, sourceStartSeconds: 0, sourceDurationSeconds: 1.0 / 3.0),
+            TimelinePlanBuilder.CreatePlacement(1, 1, sourceStartSeconds: 1.0 / 3.0, sourceDurationSeconds: 1.0 / 3.0),
+        };
+        var request = CreateRequest(placements);
+
+        var plan = _builder.Build(request);
+
+        var expectedPerSegment = TwentyFiveFps.FromFrameCount(8);
+        Assert.Equal(expectedPerSegment, plan.Segments[0].SourceDuration);
+        Assert.Equal(expectedPerSegment, plan.Segments[1].SourceDuration);
+        Assert.Equal(TwentyFiveFps.FromFrameCount(16), plan.PlannedVideoDuration);
+    }
+
+    [Fact]
+    public void Build_PlacementQuantizesToZeroFrames_ThrowsRenderPlanException()
+    {
+        // 0.01s at 25fps is 0.25 frames, which rounds to 0 - a degenerate
+        // zero-duration trim ffmpeg cannot encode. Must fail loudly here
+        // rather than silently building a RenderPlan that would fail (or
+        // worse, silently drop a segment) once handed to ffmpeg.
+        var placements = new[] { TimelinePlanBuilder.CreatePlacement(0, 0, sourceStartSeconds: 0, sourceDurationSeconds: 0.01) };
+        var request = CreateRequest(placements);
+
+        Assert.Throws<RenderPlanException>(() => _builder.Build(request));
     }
 
     [Fact]

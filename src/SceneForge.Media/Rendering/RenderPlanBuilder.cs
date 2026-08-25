@@ -56,10 +56,49 @@ public sealed class RenderPlanBuilder : IRenderPlanBuilder
             throw new RenderPlanException("RenderOutputSpec.FrameRate must be a defined rate.");
         }
 
+        var frameRate = request.OutputSpec.FrameRate;
         var segments = new List<RenderSegment>(plan.Placements.Count);
+        var plannedVideoDuration = TimeSpan.Zero;
         foreach (var placement in plan.Placements)
         {
-            var segmentEnd = placement.SourceRange.Start + placement.UsedDuration;
+            // ffmpeg's trim filter keeps every source frame whose
+            // presentation time falls within [start, start+duration) - for
+            // a duration that is not an exact multiple of the frame
+            // period, the last frame that starts inside that window is
+            // kept in full even though the window's nominal end falls
+            // partway through that frame's own display period, so an
+            // unquantized duration handed straight to ffmpeg gets whatever
+            // frame count happens to overlap the window, not a value
+            // SceneForge chose (verified directly against real ffmpeg:
+            // this is deterministic filter behavior, not an
+            // encoder/version-specific quirk). Rounding to the NEAREST
+            // whole frame here - which may land above or below the
+            // original duration, unlike trim's own always-keep-the-
+            // overlapping-frame behavior - produces a duration that IS an
+            // exact multiple of the frame period, and a trim window whose
+            // width is an exact multiple of the frame period always
+            // produces exactly that many frames regardless of phase
+            // (verified directly against real ffmpeg across multiple
+            // segment counts) - so both this segment's actual rendered
+            // frame count and PlannedVideoDuration (the running sum below)
+            // are guaranteed to agree with what ffmpeg will actually
+            // produce, instead of silently drifting further apart with
+            // every additional segment (see docs/OPTIMIZATION_REPORT.md's
+            // investigation - this was a real, measured,
+            // per-segment-accumulating bug, not an unavoidable ffmpeg
+            // quirk that tolerance alone could paper over). Same
+            // MidpointRounding.AwayFromZero convention TimelinePlanner
+            // already uses for its own target-duration quantization.
+            var frameCount = frameRate.ToFrameCount(placement.UsedDuration);
+            if (frameCount <= 0)
+            {
+                throw new RenderPlanException(
+                    $"Placement {placement.Position}'s duration ({placement.UsedDuration}) rounds to {frameCount} frames at the output frame rate {frameRate} - too short to render.");
+            }
+
+            var quantizedDuration = frameRate.FromFrameCount(frameCount);
+
+            var segmentEnd = placement.SourceRange.Start + quantizedDuration;
             if (videoStream.Duration is { } sourceDuration && segmentEnd - sourceDuration > SourceDurationSlack)
             {
                 throw new RenderPlanException(
@@ -70,9 +109,10 @@ public sealed class RenderPlanBuilder : IRenderPlanBuilder
             {
                 Position = placement.Position,
                 SourceStart = placement.SourceRange.Start,
-                SourceDuration = placement.UsedDuration,
+                SourceDuration = quantizedDuration,
                 IsTrimmed = placement.IsTrimmed,
             });
+            plannedVideoDuration += quantizedDuration;
         }
 
         segments.Sort((a, b) => a.Position.CompareTo(b.Position));
@@ -84,7 +124,7 @@ public sealed class RenderPlanBuilder : IRenderPlanBuilder
             OutputSpec = request.OutputSpec,
             Audio = audio with { FilePath = audioPath },
             SourceRotationDegrees = videoStream.RotationDegrees,
-            PlannedVideoDuration = plan.PlannedDuration,
+            PlannedVideoDuration = plannedVideoDuration,
         };
     }
 }
