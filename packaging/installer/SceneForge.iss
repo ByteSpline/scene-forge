@@ -1,10 +1,11 @@
 ; SceneForge Inno Setup installer script.
 ;
-; Not compiled/tested in the environment this was authored in (no Inno
-; Setup Compiler available there) - see docs/PACKAGING_REPORT.md,
-; "Installer (Inno Setup)", for exactly what was and was not verified, and
-; the steps to compile and test this for real on a Windows machine with
-; Inno Setup 6 installed.
+; Compiled and run end-to-end with Inno Setup 6 (see
+; docs/PACKAGING_REPORT.md, "Installer (Inno Setup)", for exactly what was
+; verified: per-user install, Start Menu/registry entries, launch from the
+; installed location, and uninstall leaving %LOCALAPPDATA%\SceneForge
+; untouched). The per-machine/admin install path compiles from this same
+; script but was not run end-to-end - see that section for details.
 ;
 ; Prerequisites before compiling:
 ;   1. Run packaging\scripts\Publish-SceneForge.ps1 (produces
