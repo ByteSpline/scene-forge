@@ -35,3 +35,14 @@ tools/
 ## from tests/fixtures/manifest.json via SceneForge.Accuracy's `generate`
 ## command; see tests/fixtures/README.md)
 tests/fixtures/generated/
+
+## Packaging: vendor binaries (ffmpeg, the VC++ redistributable) are never
+## committed - each has its own redistribution license that must be
+## reviewed before shipping; see packaging/vendor/README.md and
+## LICENSE_NOTICE.md. Built installers/ZIPs are reproducible from source
+## and vendor/ via packaging/scripts/, so they are not committed either.
+packaging/vendor/ffmpeg/*
+!packaging/vendor/ffmpeg/.gitkeep
+packaging/vendor/vcredist/*
+!packaging/vendor/vcredist/.gitkeep
+packaging/output/

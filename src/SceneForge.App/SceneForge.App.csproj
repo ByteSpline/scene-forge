@@ -14,6 +14,28 @@
     <InvariantGlobalization>false</InvariantGlobalization>
   </PropertyGroup>
 
+  <!-- Distributable identity/version metadata (visible in Explorer's
+       Properties dialog, the taskbar/Alt-Tab, and the Inno Setup installer,
+       which reads this same Version - see packaging/installer/SceneForge.iss).
+       Safe to set unconditionally (not publish-only): it only embeds
+       metadata into whatever build already runs, never changes RID/
+       self-contained/single-file behavior - see PublishProfiles/
+       win-x64-Release.pubxml for the packaging-only settings. -->
+  <PropertyGroup>
+    <ApplicationIcon>Resources\app.ico</ApplicationIcon>
+    <AssemblyTitle>SceneForge</AssemblyTitle>
+    <Product>SceneForge</Product>
+    <Company>SceneForge</Company>
+    <Copyright>Copyright © 2026 SceneForge contributors</Copyright>
+    <Description>Local, offline scene-cut detection and reassembly for Windows.</Description>
+    <NeutralLanguage>en-US</NeutralLanguage>
+    <!-- First packaged release - see docs/PACKAGING_REPORT.md. Bump this
+         (and only this) for every subsequent packaged build. -->
+    <Version>1.0.0</Version>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
+  </PropertyGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\SceneForge.Core\SceneForge.Core.csproj" />
     <ProjectReference Include="..\SceneForge.Media\SceneForge.Media.csproj" />
@@ -24,5 +46,38 @@
     <PackageReference Include="CommunityToolkit.Mvvm" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
   </ItemGroup>
+
+  <!-- Packaging: relocate OpenCvSharp4.runtime.win's native assets from the
+       publish root (where a real self-contained win-x64 publish places
+       them flat, next to the exe - verified via an actual `dotnet publish
+       -p:PublishProfile=win-x64-Release`, see docs/PACKAGING_REPORT.md)
+       into 'tools\opencv\', matching
+       SceneForge.Media.Tooling.OpenCvNativeLibraryResolver's expected
+       packaged layout and FfmpegToolLocator's equivalent 'tools\ffmpeg\'
+       convention for the same "never PATH, always relative to the exe"
+       rule (CLAUDE.md). Only runs for an actual win-x64 publish
+       (packaging/scripts/Publish-SceneForge.ps1 via
+       PublishProfiles/win-x64-Release.pubxml) - a plain dotnet
+       build/publish without that RID is unaffected, so local dev/F5 and
+       `dotnet test` keep finding the DLL exactly where they do today
+       (runtimes\win-x64\native\, copied there by OpenCvSharp4.runtime.win's
+       own build target). opencv_videoio_ffmpeg*.dll is not used by this
+       app (video decoding goes through the ffmpeg process, never OpenCV's
+       VideoCapture - see Extraction/Sampling), but it is moved alongside
+       OpenCvSharpExtern.dll anyway so nothing OpenCV-related is left loose
+       at the app root. -->
+  <Target Name="RelocateOpenCvNativeAssetForPackaging" AfterTargets="Publish" Condition="'$(RuntimeIdentifier)' == 'win-x64'">
+    <ItemGroup>
+      <_OpenCvNativeAsset Include="$(PublishDir)OpenCvSharpExtern.dll" />
+      <_OpenCvNativeAsset Include="$(PublishDir)opencv_videoio_ffmpeg*.dll" />
+    </ItemGroup>
+    <PropertyGroup>
+      <_OpenCvNativeDestDir>$(PublishDir)tools\opencv\</_OpenCvNativeDestDir>
+    </PropertyGroup>
+    <MakeDir Directories="$(_OpenCvNativeDestDir)" Condition="'@(_OpenCvNativeAsset)' != ''" />
+    <Move SourceFiles="@(_OpenCvNativeAsset)" DestinationFolder="$(_OpenCvNativeDestDir)" Condition="'@(_OpenCvNativeAsset)' != ''" />
+    <Error Text="Publish did not produce OpenCvSharpExtern.dll at the publish root - OpenCvSharp4.runtime.win may not have restored for win-x64."
+           Condition="!Exists('$(_OpenCvNativeDestDir)OpenCvSharpExtern.dll')" />
+  </Target>
 
 </Project>
