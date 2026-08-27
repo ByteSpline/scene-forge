@@ -33,3 +33,23 @@ Algorithmic changes must be test-first. Optimizations must be benchmarked. Claim
 ## Decision 8: Documentation and quality gates
 
 Behavior changes require documentation updates. Formatting, build, and relevant tests must pass before the work is considered finished, and no later phase may begin while earlier acceptance criteria remain unresolved.
+
+## Decision 9: Packaging and distribution
+
+The distributable is a self-contained, single-file win-x64 Release publish
+(`src/SceneForge.App/Properties/PublishProfiles/win-x64-Release.pubxml`)
+with trimming left off pending benchmarked evidence it is safe (Decision
+7). FFmpeg/FFprobe and OpenCV's native library are bundled under a
+`tools\` folder next to the executable and resolved exclusively relative
+to it - `SceneForge.Media.Tooling.FfmpegToolLocator` for the former,
+`OpenCvNativeLibraryResolver`'s `NativeLibrary.SetDllImportResolver` for
+the latter - never via `PATH` (Decision 4). A startup diagnostics gate
+(`NativeDependencyDiagnosticsService`, shown via `StartupDiagnosticsWindow`
+before the main workflow window exists) verifies ffmpeg/ffprobe, the
+Visual C++ runtime, and the OpenCV native library are all actually usable
+before any workflow screen is reachable, so a broken or incomplete
+packaged install fails loudly at launch with concrete remediation instead
+of opaquely mid-pipeline. See `docs/PACKAGING_REPORT.md` for the installer/
+portable-ZIP build process and verification evidence, and
+`LICENSE_NOTICE.md` for the redistribution obligations each bundled
+third-party binary carries.

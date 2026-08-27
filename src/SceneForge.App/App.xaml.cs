@@ -9,6 +9,7 @@ using SceneForge.App.Persistence;
 using SceneForge.App.Services;
 using SceneForge.App.Session;
 using SceneForge.App.ViewModels;
+using SceneForge.App.Views;
 using SceneForge.Core.Resources;
 using SceneForge.Infrastructure.Logging;
 using SceneForge.Infrastructure.Persistence;
@@ -45,8 +46,37 @@ public partial class App : Application
 
         DispatcherUnhandledException += OnDispatcherUnhandledException;
 
+        // WPF's default ShutdownMode (OnLastWindowClose) tears the whole
+        // Application down the instant a window closes with zero other
+        // windows open - which is exactly what happens between
+        // diagnosticsWindow.ShowDialog() returning and mainWindow.Show()
+        // running a few lines below, since neither window exists yet when
+        // the diagnostics window is the only one open. Without this, a
+        // passing diagnostics check would still silently exit the app
+        // (verified by actually running the packaged build - see
+        // docs/PACKAGING_REPORT.md). Restored to the default once
+        // MainWindow exists, so closing it still exits the app normally.
+        ShutdownMode = ShutdownMode.OnExplicitShutdown;
+
+        // Gate on required native components (ffmpeg/ffprobe, the Visual
+        // C++ runtime, OpenCV) before the workflow window ever exists - a
+        // packaged build missing one of these must fail loudly and
+        // immediately with concrete remediation, not several screens later
+        // as an opaque exception the first time analysis touches it. Shown
+        // via ShowDialog (blocking, modal) rather than folded into
+        // MainWindow's own startup because there is nothing useful for a
+        // user to do in the main workflow until this passes.
+        var diagnosticsViewModel = _serviceProvider.GetRequiredService<StartupDiagnosticsViewModel>();
+        var diagnosticsWindow = new StartupDiagnosticsWindow(diagnosticsViewModel);
+        if (diagnosticsWindow.ShowDialog() != true)
+        {
+            Shutdown();
+            return;
+        }
+
         var mainWindow = _serviceProvider.GetRequiredService<MainWindow>();
         MainWindow = mainWindow;
+        ShutdownMode = ShutdownMode.OnLastWindowClose;
         mainWindow.Show();
 
         // Fired only after the window is visible and this method has
@@ -83,6 +113,9 @@ public partial class App : Application
         // screen.
         services.AddSingleton<IProcessRunner, ProcessRunner>();
         services.AddSingleton<IFfmpegToolLocator, FfmpegToolLocator>();
+        services.AddSingleton<IOpenCvNativeProbe, OpenCvNativeProbe>();
+        services.AddSingleton<INativeLibraryProbe, SystemNativeLibraryProbe>();
+        services.AddSingleton<INativeDependencyDiagnosticsService, NativeDependencyDiagnosticsService>();
         services.AddSingleton<IFfprobeService, FfprobeService>();
         services.AddSingleton<IFrameSampler, FrameSampler>();
         services.AddSingleton<ITransitionDetector, TransitionDetector>();
@@ -116,6 +149,7 @@ public partial class App : Application
         // Shell.
         services.AddSingleton<MainWindow>();
         services.AddSingleton<MainWindowViewModel>();
+        services.AddTransient<StartupDiagnosticsViewModel>();
 
         // One workflow step = one transient ViewModel, re-created from the
         // shared WorkflowSession on every navigation (see
