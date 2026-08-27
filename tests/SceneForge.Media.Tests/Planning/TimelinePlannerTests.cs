@@ -115,8 +115,14 @@ public class TimelinePlannerTests
     }
 
     [Fact]
-    public void Plan_InsufficientFootage_NeverExceedsReuseCap_AndReportsQuantifiedWarning()
+    public void Plan_InsufficientFootage_RelaxesMaximumReuseCount_AndStillReachesTargetExactly()
     {
+        // Two 3s clips can cover only 6s at MaximumReuseCount = 1 - the
+        // scenario that used to leave the plan permanently 4s short (see
+        // docs/PHASE_08_REPORT.md). The hard product requirement is that the
+        // output must never be shorter than requested when relaxation can
+        // close the gap, so the planner must now keep going instead of
+        // stopping at the originally requested cap.
         var clips = new[]
         {
             CleanClipBuilder.Create(0, 3, sourceSceneIndex: 0),
@@ -126,13 +132,43 @@ public class TimelinePlannerTests
 
         var plan = _planner.Plan(request);
 
-        Assert.False(plan.IsComplete);
+        Assert.True(plan.IsComplete);
+        Assert.Equal(TimeSpan.FromSeconds(10), plan.PlannedDuration);
+        TimelinePlanAssertions.AssertMaximumReuseCountRespectedOrRelaxed(plan, request.MaximumReuseCount);
+
         Assert.NotNull(plan.FeasibilityWarning);
-        Assert.Equal(TimeSpan.FromSeconds(6), plan.PlannedDuration);
-        Assert.Equal(TimeSpan.FromSeconds(4), plan.FeasibilityWarning!.Shortfall);
-        TimelinePlanAssertions.AssertNeverExceedsMaximumReuseCount(plan, request.MaximumReuseCount);
-        Assert.Contains("10.00s", plan.FeasibilityWarning.Message);
-        Assert.Contains("6.00s", plan.FeasibilityWarning.Message);
+        Assert.Equal(TimelineFeasibilityWarningKind.SignificantRepetition, plan.FeasibilityWarning!.Kind);
+        Assert.Equal(TimeSpan.Zero, plan.FeasibilityWarning.Shortfall);
+        Assert.Contains(plan.Placements.Select(p => p.ClipIndex).GroupBy(c => c), g => g.Count() > request.MaximumReuseCount);
+        Assert.Contains(plan.DecisionTrace, t => t.RelaxedConstraints.Contains(RelaxedConstraint.MaximumReuseCount));
+    }
+
+    [Fact]
+    public void Plan_ZeroDurationOnlyPool_CannotBeRelaxedIntoReachingTarget_ReportsShortfall()
+    {
+        // No amount of reuse-count relaxation, spacing relaxation, or
+        // repetition can manufacture duration from a pool that has none -
+        // the one case ComputeGuaranteedSufficientReuseCap deliberately
+        // leaves alone, and IsComplete's one legitimate false outcome.
+        var clips = new[]
+        {
+            CleanClipBuilder.Create(0, 0, sourceSceneIndex: 0),
+            CleanClipBuilder.Create(5, 0, sourceSceneIndex: 1),
+        };
+        var request = CreateRequest(clips, targetSeconds: 10, maximumReuseCount: 1, minimumRepeatDistance: 0, originalNeighborSeparation: 0, visualClusterAdjacencyLimit: 0);
+
+        var plan = _planner.Plan(request);
+
+        // Zero-duration clips can still be placed (they just never advance
+        // the budget, the same "never hangs, never regresses remaining"
+        // behavior TimelinePlannerPropertyTests already covers), but they
+        // can never sum to anything - the plan stays incomplete regardless.
+        Assert.False(plan.IsComplete);
+        Assert.Equal(TimeSpan.Zero, plan.PlannedDuration);
+        Assert.NotNull(plan.FeasibilityWarning);
+        Assert.Equal(TimelineFeasibilityWarningKind.Shortfall, plan.FeasibilityWarning!.Kind);
+        Assert.Equal(plan.QuantizedTargetDuration, plan.FeasibilityWarning.Shortfall);
+        Assert.Equal(TimeSpan.Zero, plan.FeasibilityWarning.AchievedDuration);
     }
 
     [Fact]
@@ -326,16 +362,40 @@ public class TimelinePlannerTests
     }
 
     [Fact]
-    public void Plan_FeasibilityWarningMessage_ContainsQuantifiedNumbers()
+    public void Plan_ShortfallWarningMessage_ContainsQuantifiedNumbers()
+    {
+        // A zero-duration-only pool is the one case reuse relaxation cannot
+        // fix (see Plan_ZeroDurationOnlyPool_CannotBeRelaxedIntoReachingTarget_ReportsShortfall),
+        // so it is the scenario that still legitimately exercises the
+        // Shortfall message format.
+        var clips = new[] { CleanClipBuilder.Create(0, 0, sourceSceneIndex: 0) };
+        var request = CreateRequest(clips, targetSeconds: 5, maximumReuseCount: 1);
+
+        var plan = _planner.Plan(request);
+
+        Assert.NotNull(plan.FeasibilityWarning);
+        Assert.Equal(TimelineFeasibilityWarningKind.Shortfall, plan.FeasibilityWarning!.Kind);
+        Assert.Contains("1 clip(s)", plan.FeasibilityWarning.Message);
+        Assert.Contains("5.00s", plan.FeasibilityWarning.Message);
+        Assert.Contains("0.00s", plan.FeasibilityWarning.Message);
+    }
+
+    [Fact]
+    public void Plan_SignificantRepetitionWarningMessage_ContainsQuantifiedNumbers()
     {
         var clips = new[] { CleanClipBuilder.Create(0, 2, sourceSceneIndex: 0) };
         var request = CreateRequest(clips, targetSeconds: 5, maximumReuseCount: 1);
 
         var plan = _planner.Plan(request);
 
+        Assert.True(plan.IsComplete);
         Assert.NotNull(plan.FeasibilityWarning);
-        Assert.Contains("1 clip(s)", plan.FeasibilityWarning!.Message);
-        Assert.Contains("maximum reuse count of 1", plan.FeasibilityWarning.Message);
+        Assert.Equal(TimelineFeasibilityWarningKind.SignificantRepetition, plan.FeasibilityWarning!.Kind);
+        Assert.Equal(1, plan.FeasibilityWarning.RequestedMaximumReuseCount);
+        Assert.True(plan.FeasibilityWarning.EffectiveMaximumReuseCount > 1);
+        Assert.Contains("1 clip(s)", plan.FeasibilityWarning.Message);
+        Assert.Contains("requested maximum of 1", plan.FeasibilityWarning.Message);
+        Assert.Contains("5.00s", plan.FeasibilityWarning.Message);
     }
 
     [Fact]

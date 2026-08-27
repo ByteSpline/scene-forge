@@ -45,12 +45,18 @@ public sealed record TimelinePlanRequest
         init => _minimumRepeatDistance = Math.Max(0, value);
     }
 
-    // Hard cap on how many times any single clip may appear in the plan.
-    // Unlike every other constraint here, this one is never relaxed - see
-    // TimelinePlanner's tiered relaxation order and
-    // TimelinePlan.FeasibilityWarning for what happens when it makes the
-    // target duration unreachable. Clamped to at least 1: a clip usable
-    // zero times is not a usable clip.
+    // Preferred cap on how many times any single clip may appear in the
+    // plan - honored exactly whenever the available footage allows it.
+    // Reaching TargetAudioDuration exactly is a hard product requirement
+    // that outranks this preference: if every clip has reached this cap
+    // under every relaxed spacing tier and the target still has not been
+    // reached, TimelinePlanner re-plans once more with the smallest higher
+    // cap it can prove sufficient (least-used clips still preferred first),
+    // records RelaxedConstraint.MaximumReuseCount on every placement that
+    // needed it, and reports TimelineFeasibilityWarningKind.SignificantRepetition
+    // for transparency - never a silently short plan. See TimelinePlanner's
+    // algorithm doc comment. Clamped to at least 1: a clip usable zero times
+    // is not a usable clip.
     public int MaximumReuseCount
     {
         get => _maximumReuseCount;

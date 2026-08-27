@@ -9,11 +9,25 @@ namespace SceneForge.Media.Tests.TestSupport;
 // silent violation.
 internal static class TimelinePlanAssertions
 {
-    public static void AssertNeverExceedsMaximumReuseCount(TimelinePlan plan, int maximumReuseCount)
+    // MaximumReuseCount is a preference, not a hard cap (see
+    // TimelinePlanRequest.MaximumReuseCount and RelaxedConstraint.MaximumReuseCount):
+    // a clip may be used more times than requested, but only when every
+    // placement that pushed it past the requested count is tagged
+    // accordingly, the same "respected or relaxed" pattern the other three
+    // placement-spacing assertions below already use.
+    public static void AssertMaximumReuseCountRespectedOrRelaxed(TimelinePlan plan, int maximumReuseCount)
     {
-        foreach (var group in plan.Placements.GroupBy(p => p.ClipIndex))
+        var usageOrdinalByClip = new Dictionary<int, int>();
+        foreach (var placement in plan.Placements)
         {
-            Assert.True(group.Count() <= maximumReuseCount, $"Clip {group.Key} was used {group.Count()} times, exceeding MaximumReuseCount {maximumReuseCount}.");
+            usageOrdinalByClip.TryGetValue(placement.ClipIndex, out var priorOrdinal);
+            var thisOrdinal = priorOrdinal + 1;
+            usageOrdinalByClip[placement.ClipIndex] = thisOrdinal;
+
+            if (thisOrdinal > maximumReuseCount)
+            {
+                AssertRelaxed(plan, placement.Position, RelaxedConstraint.MaximumReuseCount);
+            }
         }
     }
 
@@ -83,13 +97,23 @@ internal static class TimelinePlanAssertions
         if (plan.IsComplete)
         {
             Assert.Equal(plan.QuantizedTargetDuration, plan.PlannedDuration);
-            Assert.Null(plan.FeasibilityWarning);
+
+            // A complete plan can still carry a warning: reaching the target
+            // exactly by relaxing MaximumReuseCount is informational only
+            // (TimelineFeasibilityWarningKind.SignificantRepetition), never a
+            // shortfall - see TimelinePlan.FeasibilityWarning.
+            if (plan.FeasibilityWarning is not null)
+            {
+                Assert.Equal(TimelineFeasibilityWarningKind.SignificantRepetition, plan.FeasibilityWarning.Kind);
+                Assert.Equal(TimeSpan.Zero, plan.FeasibilityWarning.Shortfall);
+            }
         }
         else
         {
             Assert.NotNull(plan.FeasibilityWarning);
+            Assert.Equal(TimelineFeasibilityWarningKind.Shortfall, plan.FeasibilityWarning!.Kind);
             Assert.True(plan.PlannedDuration < plan.QuantizedTargetDuration);
-            Assert.Equal(plan.QuantizedTargetDuration - plan.PlannedDuration, plan.FeasibilityWarning!.Shortfall);
+            Assert.Equal(plan.QuantizedTargetDuration - plan.PlannedDuration, plan.FeasibilityWarning.Shortfall);
         }
     }
 
