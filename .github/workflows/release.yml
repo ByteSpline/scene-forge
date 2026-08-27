@@ -1,0 +1,281 @@
+name: Release
+
+# Manual-only. This workflow must never gain a `push` or `pull_request`
+# trigger - CI's automatic gate lives entirely in ci.yml. Packaging and
+# publishing a release is a deliberate, human-initiated action.
+#
+# This workflow drives Phase 14's packaging pipeline
+# (packaging/scripts/Publish-SceneForge.ps1, New-PortableZip.ps1,
+# Verify-PortableBuild.ps1, packaging/installer/SceneForge.iss) rather than
+# a parallel one - see docs/CI_RELEASE_GUIDE.md, "Why this workflow calls
+# Phase 14's scripts", for why an earlier version of this file built its
+# own independent packaging pipeline and why that was reconciled away.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch, tag, or commit SHA to build"
+        required: true
+        default: "main"
+        type: string
+      build_type:
+        description: "artifact-only: build and upload workflow artifacts only. versioned-release: also tag and publish a GitHub Release."
+        required: true
+        default: "artifact-only"
+        type: choice
+        options:
+          - artifact-only
+          - versioned-release
+      version:
+        description: "Semantic version, e.g. 1.4.0 (required when build_type is versioned-release; ignored otherwise)"
+        required: false
+        default: ""
+        type: string
+
+# Only one release build per (ref, build_type) at a time, so two manual
+# dispatches can never race to publish the same tag or clobber each other's
+# packaging/output.
+concurrency:
+  group: release-${{ inputs.ref }}-${{ inputs.build_type }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: 1
+  DOTNET_NOLOGO: 1
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 1
+  CI: true
+  # Pinned, not "-y" latest: this is a release pipeline, so the toolchain
+  # that produces a shipped installer must be reproducible and traceable,
+  # not whatever Chocolatey happens to serve on the day the workflow runs.
+  # Confirmed present in the Chocolatey community feed at the time this was
+  # pinned (community.chocolatey.org/api/v2), and close to the 6.7.3 this
+  # exact .iss script was actually compiled with in docs/PACKAGING_REPORT.md.
+  # Bump deliberately, not silently, when a newer version is needed.
+  INNOSETUP_CHOCO_VERSION: "6.7.1"
+
+jobs:
+  build:
+    name: Restore, build, test, and package
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout ${{ inputs.ref }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Validate inputs
+        shell: pwsh
+        env:
+          BUILD_TYPE: ${{ inputs.build_type }}
+          VERSION_INPUT: ${{ inputs.version }}
+        run: |
+          # Workflow inputs arrive here as environment variables (a value,
+          # never interpreted as script text), not spliced directly into
+          # this script body - deliberate, see "Known risks and follow-ups"
+          # in docs/CI_RELEASE_GUIDE.md for why every step in this workflow
+          # passes inputs via env instead of an inline expression inside
+          # "run:".
+          if ($env:BUILD_TYPE -eq "versioned-release") {
+            Import-Module ./packaging/ReleaseVersioning.psm1
+            $errorMessage = Test-ReleaseVersion -Version $env:VERSION_INPUT
+            if ($errorMessage) {
+              Write-Error $errorMessage
+              exit 1
+            }
+          }
+
+      - name: Resolve build metadata
+        id: meta
+        shell: pwsh
+        env:
+          BUILD_TYPE: ${{ inputs.build_type }}
+          VERSION_INPUT: ${{ inputs.version }}
+        run: |
+          # github.sha is the SHA that triggered the workflow dispatch, which
+          # is not necessarily the ref the user asked to build - resolve the
+          # actual checked-out commit instead.
+          $shortSha = (git rev-parse HEAD).Substring(0, 7)
+
+          if ($env:BUILD_TYPE -eq "versioned-release") {
+            $versionTag = $env:VERSION_INPUT
+          } else {
+            $versionTag = "0.0.0-artifact.$shortSha"
+          }
+
+          Write-Host "short_sha=$shortSha"
+          Write-Host "version_tag=$versionTag"
+          "short_sha=$shortSha" >> $env:GITHUB_OUTPUT
+          "version_tag=$versionTag" >> $env:GITHUB_OUTPUT
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Restore
+        run: dotnet restore SceneForge.sln
+
+      - name: Build
+        run: dotnet build SceneForge.sln --no-restore --configuration Release
+
+      - name: Test
+        run: dotnet test SceneForge.sln --no-build --configuration Release --logger "trx"
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ steps.meta.outputs.version_tag }}
+          path: "**/TestResults/*.trx"
+          if-no-files-found: warn
+
+      - name: Stamp package version
+        # SceneForge.App.csproj's <Version> and packaging/installer/SceneForge.iss's
+        # MyAppVersion are independent sources of truth for local, manual
+        # packaging (see that csproj's own comment: "Bump this - and only
+        # this - for every subsequent packaged build"). An automated
+        # pipeline needs the same edit made consistently from one input
+        # instead - see packaging/Set-PackageVersion.ps1. Runs for both
+        # build types so every artifact this workflow produces is
+        # traceable to the commit it came from, not just versioned-release
+        # ones.
+        shell: pwsh
+        env:
+          VERSION_TAG: ${{ steps.meta.outputs.version_tag }}
+        run: ./packaging/Set-PackageVersion.ps1 -Version $env:VERSION_TAG
+
+      - name: Fetch vendor ffmpeg (LGPL-only, pinned)
+        # packaging/scripts/Publish-SceneForge.ps1 requires a real ffmpeg
+        # build already staged in packaging/vendor/ffmpeg (see that folder's
+        # own README) - deliberately not automated there so a packager
+        # cannot skip reviewing the license of what gets bundled. This
+        # workflow makes that same deliberate choice once, here, from a
+        # pinned, verifiably LGPL-only source - see
+        # packaging/Get-VendorFfmpeg.ps1's own header for the license
+        # rationale (LICENSE_NOTICE.md requires LGPL-only, never GPL).
+        shell: pwsh
+        run: ./packaging/Get-VendorFfmpeg.ps1
+
+      - name: Fetch vendor VC++ Redistributable (best-effort)
+        # Optional: packaging/installer/SceneForge.iss guards every
+        # reference to VC_redist.x64.exe with #ifexist and compiles fine
+        # without it, and NativeDependencyDiagnosticsService still reports
+        # a missing VC++ runtime to the user at first launch regardless -
+        # so a transient failure fetching this one optional bootstrap file
+        # must not fail the whole release build the way a missing ffmpeg
+        # build does.
+        shell: pwsh
+        run: |
+          try {
+            ./packaging/Get-VendorVcRedist.ps1
+          } catch {
+            Write-Warning "Could not fetch VC_redist.x64.exe ($($_.Exception.Message)) - the installer will compile without it; see packaging/vendor/README.md."
+          }
+
+      - name: Restore win-x64 publish assets
+        # Confirmed by actually reproducing it in this reconciliation
+        # review, not assumed: the earlier solution-level `dotnet restore`
+        # (needed for Restore/Build/Test above) writes
+        # src/SceneForge.App/obj/project.assets.json without a win-x64
+        # target, since a plain solution restore has no RID context. When
+        # Publish-SceneForge.ps1 then runs `dotnet publish
+        # -p:PublishProfile=win-x64-Release` (which needs exactly that RID
+        # target), MSBuild's incremental-restore check treats the existing
+        # assets file as already up to date and does not regenerate it for
+        # win-x64, failing with NETSDK1047 ("Assets file ... doesn't have a
+        # target for 'net8.0-windows/win-x64'"). An explicit, RID-scoped
+        # restore of just the App project here - unrelated to and not a
+        # duplicate of the solution-level Restore step above - reliably
+        # avoids it, without any change to Publish-SceneForge.ps1 itself.
+        run: dotnet restore src/SceneForge.App/SceneForge.App.csproj -r win-x64
+
+      - name: Publish self-contained build
+        # Publish-SceneForge.ps1 itself verifies SceneForge.App.exe and
+        # tools\opencv\OpenCvSharpExtern.dll both exist after publishing,
+        # failing loudly if not - no separate check needed here.
+        run: ./packaging/scripts/Publish-SceneForge.ps1
+
+      - name: Build portable ZIP
+        run: ./packaging/scripts/New-PortableZip.ps1
+
+      - name: Verify portable build
+        # Windows PowerShell (not pwsh) deliberately: Verify-PortableBuild.ps1
+        # loads UIAutomationClient/UIAutomationTypes, which resolve
+        # reliably under the classic .NET Framework-hosted powershell.exe.
+        # This has not been independently confirmed under pwsh's Core CLR
+        # host on a GitHub-hosted runner, so this step does not take that
+        # risk - see docs/CI_RELEASE_GUIDE.md.
+        shell: powershell
+        run: ./packaging/scripts/Verify-PortableBuild.ps1
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          choco install innosetup --version=${{ env.INNOSETUP_CHOCO_VERSION }} -y --no-progress
+
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            Write-Error "Inno Setup compiler not found at $iscc after installation."
+            exit 1
+          }
+
+          & $iscc packaging\installer\SceneForge.iss
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "ISCC.exe exited with code $LASTEXITCODE."
+            exit 1
+          }
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sceneforge-installer-${{ steps.meta.outputs.version_tag }}
+          path: packaging/output/SceneForge-*-win-x64-setup.exe
+          if-no-files-found: error
+
+      - name: Upload portable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sceneforge-portable-${{ steps.meta.outputs.version_tag }}
+          path: packaging/output/SceneForge-*-win-x64-portable.zip
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    if: inputs.build_type == 'versioned-release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download installer artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: sceneforge-installer-${{ inputs.version }}
+          path: dist
+
+      - name: Download portable artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: sceneforge-portable-${{ inputs.version }}
+          path: dist
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_REF: ${{ inputs.ref }}
+          RELEASE_REPO: ${{ github.repository }}
+        run: |
+          gh release create "v$RELEASE_VERSION" \
+            --repo "$RELEASE_REPO" \
+            --target "$RELEASE_REF" \
+            --title "SceneForge v$RELEASE_VERSION" \
+            --notes "Automated release build of SceneForge v$RELEASE_VERSION from ref \`$RELEASE_REF\`." \
+            dist/*
