@@ -71,8 +71,17 @@ public sealed class TimelinePlanner : ITimelinePlanner
     // 20-minute target from 1 minute of 3-5s source clips needs at most a
     // few hundred), so this exists only to keep a pathological synthetic
     // input (e.g. a sub-millisecond test clip against a very long target)
-    // from turning one Plan call into an unbounded amount of work - not a
-    // limit expected to bind in practice.
+    // from turning one Plan call into a literally unbounded amount of work
+    // - not a limit expected to bind in practice, and deliberately kept
+    // large (measured worst case ~18s for a single 1s clip against a
+    // ~22-day target - see docs/PHASE_REPORT.md's Phase 16 review) rather
+    // than tightened further: the product requirement behind this whole
+    // phase ("never produce a short output ... no matter what") is the
+    // higher priority once TimelineSummaryViewModel.BuildPlan runs Plan off
+    // the UI thread (see that type's own remarks) - the UI-freeze risk a
+    // smaller bound would have traded against is the thing the Task.Run
+    // offload actually fixes, so narrowing this further would only weaken
+    // the completion guarantee for comparatively little remaining benefit.
     private const long MaxReuseRelaxationHeadroom = 2_000_000;
 
     public TimelinePlan Plan(TimelinePlanRequest request, CancellationToken cancellationToken = default)

@@ -26,6 +26,32 @@ summary/Outstanding why: an automatic runtime pipeline that re-runs
 cannot close the gap (no such orchestrator exists yet, and — as this
 report's analysis shows — none is needed to satisfy the hard requirement).
 
+## Post-review update (2026-08-27)
+
+A strict release review (`PHASE_REPORT.md`, "Phase 16 review") found and
+fixed one major issue this report's original version did not catch:
+`TimelineSummaryViewModel.BuildPlan` called the new, potentially-long-running
+`ITimelinePlanner.Plan` synchronously on the UI thread with
+`CancellationToken.None`, a CLAUDE.md rule 5 violation this phase's own
+reuse-relaxation change introduced without anyone noticing, since Phase 8
+built `Plan` as synchronous specifically because it used to always be fast.
+Measured directly: a plausible large-project scenario (500 clips, a 4-hour
+target) already took ~1s; a deliberately extreme case (a single clip against
+a ~22-day target) took over 18s — an 18-second frozen, uncancelable window.
+Fixed by moving the call behind `Task.Run` with a real, live
+`CancellationToken`, following `AnalysisProgressViewModel`'s existing async
+pattern; see `PHASE_REPORT.md`'s Phase 16 review for the full writeup,
+including why `MaxReuseRelaxationHeadroom` was deliberately left at its
+original 2,000,000 rather than tightened further (narrowing it would trade
+away this phase's own "never short, no matter what" guarantee for
+comparatively little remaining benefit once the UI-thread fix was in place).
+Every number and test count elsewhere in this report below reflects the
+state **before** that review; the corrected, final counts are:
+`SceneForge.App.Tests` 64 passed (was 61 — 3 new regression tests from the
+review), `SceneForge.Media.Tests` unchanged at 514 (the review's diff inside
+`TimelinePlanner.cs` was comment-only, `MaxReuseRelaxationHeadroom`'s value
+unchanged), full solution 663/663 in both Debug and Release.
+
 ## Repository layout produced
 
 ```
@@ -356,12 +382,23 @@ immediate re-run" pattern Phases 6 and 7 already documented for a different
 test (`docs/PHASE_07_REPORT.md`, Test section) — not a regression introduced
 by this phase, and not a test this phase's changes touch.
 
+**Superseded by the post-review fix** (see "Post-review update" above):
+`TimelineSummaryViewModel` *did* need a code change after all — the
+strict release review found it called `Plan` synchronously on the UI thread
+with no real cancellation, fixed it, and added 3 regression tests. The
+corrected, current counts are `SceneForge.App.Tests` 64 and full solution
+663/663 (both Debug and Release) — see `PHASE_REPORT.md`'s Phase 16 review
+for the commands and evidence.
+
 ## Compliance notes against CLAUDE.md
 
 - Rule 1–2 (native WPF, no Electron/web/cloud/telemetry): satisfied — pure
-  in-memory selection-logic changes plus doc-comment updates; no UI, network,
-  or telemetry surface touched; `TimelineSummaryViewModel` required no code
-  change (see Design summary).
+  in-memory selection-logic changes plus doc-comment updates; no network or
+  telemetry surface touched. **Correction from the post-review fix**: unlike
+  this report originally claimed, `TimelineSummaryViewModel` *did* need a
+  code change (moving `Plan` off the UI thread) — see "Post-review update"
+  above; that change stayed within the existing WPF/MVVM UI layer and
+  introduced no new UI technology or pattern.
 - Rule 3 (FFmpeg/FFprobe + OpenCvSharp): not implicated — no media I/O in
   this phase's changes; the buffer investigation reviewed but did not modify
   `CleanClipExtractor`'s FFmpeg/OpenCvSharp-backed pipeline.
