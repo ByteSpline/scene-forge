@@ -41,7 +41,16 @@
 
             <TextBlock Text="{Binding ErrorMessage}"
                        Style="{StaticResource ErrorText}"
-                       Visibility="{Binding ErrorMessage, Converter={StaticResource NullToVisibilityConverter}}" />
+                       Visibility="{Binding ErrorMessage, Converter={StaticResource NullToVisibilityConverter}}"
+                       AutomationProperties.LiveSetting="Assertive" />
+
+            <StackPanel Visibility="{Binding IsBuilding, Converter={StaticResource NullToVisibilityConverter}}"
+                        Margin="0,0,0,8">
+                <TextBlock Text="Building timeline..."
+                           Style="{StaticResource Caption}"
+                           AutomationProperties.LiveSetting="Polite" />
+                <ProgressBar IsIndeterminate="True" Margin="0,4,0,0" />
+            </StackPanel>
 
             <Border Style="{StaticResource Card}" Visibility="{Binding ErrorMessage, Converter={StaticResource NullToVisibilityConverter}, ConverterParameter=Invert}">
                 <StackPanel>

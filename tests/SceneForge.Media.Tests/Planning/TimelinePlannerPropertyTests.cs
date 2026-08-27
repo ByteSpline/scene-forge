@@ -99,7 +99,7 @@ public class TimelinePlannerPropertyTests
 
             var plan = _planner.Plan(request);
 
-            TimelinePlanAssertions.AssertNeverExceedsMaximumReuseCount(plan, maximumReuseCount);
+            TimelinePlanAssertions.AssertMaximumReuseCountRespectedOrRelaxed(plan, maximumReuseCount);
             TimelinePlanAssertions.AssertMinimumRepeatDistanceRespectedOrRelaxed(plan, minimumRepeatDistance);
             TimelinePlanAssertions.AssertOriginalNeighborSeparationRespectedOrRelaxed(plan, originalNeighborSeparation);
             TimelinePlanAssertions.AssertVisualClusterAdjacencyLimitRespectedOrRelaxed(plan, visualClusterAdjacencyLimit);
@@ -189,7 +189,7 @@ public class TimelinePlannerPropertyTests
             var plan = _planner.Plan(request);
 
             TimelinePlanAssertions.AssertDurationInvariants(plan);
-            TimelinePlanAssertions.AssertNeverExceedsMaximumReuseCount(plan, request.MaximumReuseCount);
+            TimelinePlanAssertions.AssertMaximumReuseCountRespectedOrRelaxed(plan, request.MaximumReuseCount);
         }
     }
 

@@ -32,16 +32,24 @@ public sealed record TimelinePlan
     // claim exactness without stating what "exact" was rounded to).
     public required TimeSpan AudioDurationRoundingError { get; init; }
 
-    // True only when PlannedDuration == QuantizedTargetDuration exactly -
-    // i.e. FeasibilityWarning is null. False whenever footage was
-    // insufficient to reach the target even after relaxing every relaxable
-    // constraint.
+    // True only when PlannedDuration == QuantizedTargetDuration exactly.
+    // False only when the available footage has no usable positive-duration
+    // content at all - every other shortfall is closed by relaxing
+    // constraints (spacing, then MaximumReuseCount) before this is ever
+    // false. FeasibilityWarning can still be non-null when this is true -
+    // see its Kind.
     public required bool IsComplete { get; init; }
 
     // One entry per Placements entry, same order, same Position values -
     // zip the two lists to see both what was placed and why.
     public required IReadOnlyList<TimelinePlanTraceEntry> DecisionTrace { get; init; }
 
-    // Null when IsComplete is true. See TimelineFeasibilityWarning.
+    // Null only when the target was reached without needing to exceed the
+    // requested MaximumReuseCount. Non-null and IsComplete both true means
+    // the target was reached exactly but only via reuse relaxation
+    // (TimelineFeasibilityWarningKind.SignificantRepetition, informational
+    // only). Non-null and IsComplete false means the target could not be
+    // reached even after relaxing every relaxable constraint
+    // (TimelineFeasibilityWarningKind.Shortfall). See TimelineFeasibilityWarning.
     public required TimelineFeasibilityWarning? FeasibilityWarning { get; init; }
 }

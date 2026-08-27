@@ -583,3 +583,259 @@ workflow, and the workflow's own dispatch on GitHub Actions - both remain
 the outstanding verification step, unchanged from the Phase 15 review's
 own conclusion, now with a substantially larger fraction of the pipeline
 independently proven correct.
+
+## Phase 16 review — 2026-08-27
+
+Date: 2026-08-27
+
+### Scope
+
+Strict release review of branch `16-acceptance-testing`, commit `abe5915`
+"Step 16: Guarantee output duration always matches target audio via
+provable reuse-cap escalation", against [CLAUDE.md](CLAUDE.md) (rules 5-10
+foremost), [docs/ARCHITECTURE_DECISIONS.md](docs/ARCHITECTURE_DECISIONS.md)
+Decisions 5 and 7, and the phase's own task: guarantee
+`TimelinePlanner`-planned output always matches the target audio duration
+exactly by relaxing `MaximumReuseCount` (then spacing constraints) before
+ever reporting a shortfall, documented in
+[docs/PHASE_16_REPORT.md](docs/PHASE_16_REPORT.md). The prior phase's own
+report was treated as a claim to verify, not a fact to trust: the actual
+diff (`git show abe5915`), the new/changed tests, and the report's own
+quantified claims were independently inspected and re-run rather than
+relying on the report's narrative alone, and the running application's
+actual call path (`TimelineSummaryViewModel` → `ITimelinePlanner.Plan`) was
+traced end to end rather than reviewing `TimelinePlanner.cs` in isolation.
+
+### Commands executed and results
+
+```text
+git show --stat HEAD / git log --oneline -5           -> commit contents confirmed,
+                                                           branch 1 commit ahead of main
+
+dotnet build SceneForge.sln -c Release (before any review fix)
+  -> Build succeeded, 0 Warning(s), 0 Error(s)
+dotnet test SceneForge.sln -c Release --no-build
+  -> 660/660 passed (8 Core, 31 Accuracy, 61 App, 46 Infrastructure, 514 Media)
+
+# Independent empirical verification of the phase report's own headline
+# numeric claim ("800s achieved / 520s shortfall under the old cap=1
+# behavior"), via a temporary scratch test (written, run, then deleted -
+# never committed) reproducing the exact 200-clip pool at MaximumReuseCount=1
+# with a target equal to the pool's own total duration:
+  -> 200/200 clips placed, 800s achieved exactly, IsComplete=true,
+     FeasibilityWarning=null - confirms the claim was sound, not asserted
+     on faith.
+
+# Worst-case latency measurement of the new reuse-relaxation path (also via
+# temporary scratch tests, deleted after use), since TimelineSummaryViewModel.BuildPlan
+# called ITimelinePlanner.Plan synchronously:
+  500 clips / 4-hour target  -> 1033 ms,  4,800 placements
+  200 clips / 2-hour target  ->  170 ms,  2,400 placements
+   50 clips / 1-hour target  ->   65 ms,  1,200 placements
+   20 clips / 22-min target  ->    5 ms,    440 placements
+ 1000 clips / 24-hour target -> 6,099 ms, 86,400 placements
+    1 clip / ~22-day target  (forces ~MaxReuseRelaxationHeadroom) -> 18,038 ms, 1,900,000 placements, IsComplete=true
+
+# After the fix (TimelineSummaryViewModel.BuildPlan now runs Plan via
+# Task.Run with a real CancellationToken):
+dotnet build tests/SceneForge.App.Tests/SceneForge.App.Tests.csproj -c Release
+  -> Build succeeded, 0 Warning(s), 0 Error(s)
+dotnet test tests/SceneForge.App.Tests/SceneForge.App.Tests.csproj -c Release --filter "FullyQualifiedName~TimelineSummary"
+  -> 7/7 passed (2 pre-existing rewritten for the new async shape, 3 new
+     regression tests added by this review)
+dotnet test tests/SceneForge.App.Tests/SceneForge.App.Tests.csproj -c Release
+  -> 64/64 passed
+
+dotnet build src/SceneForge.App/SceneForge.App.csproj -c Release
+  -> Build succeeded, 0 Warning(s), 0 Error(s) (confirms the XAML busy-indicator
+     addition compiles)
+
+dotnet build SceneForge.sln -c Release / -c Debug   -> both 0 Warning(s), 0 Error(s)
+dotnet test SceneForge.sln -c Release --no-build
+  -> 663/663 passed (8 Core, 31 Accuracy, 64 App, 46 Infrastructure, 514 Media)
+dotnet test SceneForge.sln -c Debug --no-build
+  -> 663/663 passed (no flake this run - Phase 16's own report already
+     documented the pre-existing, unrelated TransitionDetectorTests
+     GC-timing flake pattern from Phases 6/7; not observed in this review's
+     run)
+
+dotnet format SceneForge.sln
+dotnet format SceneForge.sln --verify-no-changes
+  -> exit 0, no diff
+```
+
+**Relevant benchmarks:** none exist for `TimelinePlanner` (Phase 8 already
+listed this as outstanding for itself; Phase 16's own report correctly
+notes CLAUDE.md rule 9 targets *optimizations*, and this phase is a
+correctness change, not one). The worst-case-latency measurements above are
+this review's substitute evidence for the one performance-adjacent claim
+actually at stake — whether the new code path could block the UI thread —
+which is exactly what a `BenchmarkDotNet` microbenchmark would not have
+caught on its own (the defect was architectural: *where* the call ran, not
+how fast the algorithm itself is).
+
+### Review outcome
+
+#### Blockers
+
+None. Every acceptance-criteria claim in `docs/PHASE_16_REPORT.md` — the
+duration-guarantee property tests, the realistic 24-min/22-min scenario, the
+"never exceeds" reuse-cap semantics, the rewritten Phase 8 tests — was
+independently re-run and confirmed correct. The one real defect found (below)
+was a UI-thread-blocking risk, not a correctness or data-safety defect.
+
+#### Major issues (found, fixed in this review)
+
+1. **`TimelineSummaryViewModel.BuildPlan` called the new,
+   potentially-long-running `ITimelinePlanner.Plan` synchronously on the UI
+   thread, with `CancellationToken.None` — a CLAUDE.md rule 5 violation
+   Phase 16's own diff introduced without noticing.** `TimelinePlanner.Plan`
+   was deliberately kept synchronous in Phase 8 specifically *because* it
+   was always fast (`MaximumReuseCount` was a small, never-relaxed hard cap
+   — see `ITimelinePlanner.cs`'s own doc comment, which still cited that
+   now-outdated reasoning). Phase 16 removed that guarantee: `Plan` can now
+   legitimately run for hundreds of milliseconds to multiple seconds
+   whenever footage is insufficient at the requested cap, and
+   `TimelineSummaryViewModel.BuildPlan` — invoked directly from the
+   constructor and from the `Reshuffle` command, both on the UI thread —
+   never changed to account for that. Measured directly (see "Commands
+   executed" above): a plausible large-project scenario (500 clips, a
+   4-hour target) already took just over one second; the genuinely extreme
+   end (a single clip against a ~22-day target, deliberately forcing
+   `MaxReuseRelaxationHeadroom`'s upper bound) took over 18 seconds — an
+   18-second frozen, unresponsive window with no way to cancel, the exact
+   failure mode CLAUDE.md rule 5 exists to prevent. This was not
+   hypothetical: it reproduces on every call whose footage is insufficient
+   at the requested cap, which — as of this same phase — is now the
+   documented, intended behavior for underprovisioned footage rather than
+   a rare edge case.
+
+   **Fixed**: `TimelineSummaryViewModel` now follows the exact
+   `IsRunning`/`CanExecute`/`CancellationTokenSource` shape
+   `AnalysisProgressViewModel` already established for this same concern
+   (adapted for a CPU-bound `Task.Run` offload instead of already-async
+   I/O): a new `IsBuilding` observable property gates `ReshuffleCommand` and
+   `ContinueCommand` via `[NotifyCanExecuteChangedFor]`, `BuildPlan` is now
+   `[RelayCommand] private async Task`, and `Plan` runs inside
+   `Task.Run(() => _timelinePlanner.Plan(request, cancellationToken),
+   cancellationToken)` with a real, live `CancellationTokenSource` owned by
+   the ViewModel (previously always `CancellationToken.None` in practice).
+   Both awaits use `ConfigureAwait(true)` so the continuation that mutates
+   `Placements` (an `ObservableCollection` bound to a WPF `ListView`)
+   correctly resumes on the UI thread rather than a thread-pool thread — a
+   cross-thread-collection-mutation crash this review specifically checked
+   for and confirmed avoided, since nothing in a headless xUnit run would
+   have caught a `ConfigureAwait(false)` mistake here (no real WPF
+   `Dispatcher` exists in the test host). `TimelineSummaryView.xaml` gained
+   a small `IsBuilding`-bound "Building timeline..." indeterminate
+   `ProgressBar`, matching `AnalysisProgressView.xaml`'s existing pattern,
+   so the now-disabled buttons do not look like an unexplained freeze.
+   `ITimelinePlanner.cs`'s doc comment claiming an async signature "would be
+   misleading" is now only true at the interface/algorithm level — the
+   caller-side fix is the correct layer to have applied this at, since
+   changing the interface itself would have disrupted every other
+   `TimelinePlanner` caller/test for no benefit `Task.Run` at the one
+   long-running call site does not already provide.
+
+   New regression coverage (`tests/SceneForge.App.Tests/TestSupport/FakeTimelinePlanner.cs`,
+   new; `TimelineSummaryViewModelTests.cs`, 3 new tests): a deterministic
+   `Gate`-based test (mirroring `FakeTransitionDetector`'s existing pattern
+   — no wall-clock timing assumptions, cannot flake) proves `IsBuilding` and
+   `CanExecute` on `ReshuffleCommand`/`ContinueCommand` are correctly false
+   mid-flight and true again after completion; a second test proves a real,
+   live, cancelable `CancellationToken` is actually threaded through (not
+   `CancellationToken.None`); a third proves `BuildPlan`'s
+   `catch (OperationCanceledException)` path clears `IsBuilding` and leaves
+   the ViewModel usable rather than getting stuck. The four pre-existing
+   tests were updated to `await` command completion via
+   `IAsyncRelayCommand.ExecutionTask` (CommunityToolkit.Mvvm 8.4.0, already
+   the pinned package version) instead of asserting state synchronously
+   right after construction, which the new genuinely-asynchronous `Task.Run`
+   offload made stale (a real `Task.Run` always yields, unlike
+   `AnalysisProgressViewModelTests`' fully-synchronous I/O fakes).
+
+   `MaxReuseRelaxationHeadroom` (`TimelinePlanner.cs`) was considered for
+   reduction as additional defense-in-depth once the UI-thread fix was in
+   place, and briefly changed to 200,000 during this review — but reverted
+   back to Phase 16's original 2,000,000 after measurement showed the
+   smaller bound would make the plan **genuinely incomplete** (a real
+   `IsComplete = false` shortfall) for inputs the larger bound still
+   satisfies exactly. Given this phase's own explicit, non-negotiable
+   product requirement ("never produce a short output ... no matter what"),
+   and given the actual UI-freeze risk is already eliminated by the
+   `Task.Run` offload (an 18-second *background* computation is a far
+   smaller concern than an 18-second *frozen window*), narrowing the
+   completion guarantee's envelope for comparatively little remaining
+   safety benefit was judged the wrong trade — documented in
+   `TimelinePlanner.cs`'s own comment on the constant so a future reader
+   does not have to rediscover this reasoning.
+
+#### Minor issues
+
+- `TimelineSummaryView.xaml`'s "planned duration" card is still visible
+  (with stale/zero values) underneath the new "Building timeline..."
+  indicator while a build is in flight, since its own visibility is gated
+  on `ErrorMessage == null` rather than also excluding `IsBuilding`. Not
+  incorrect (values are simply overwritten the moment the build completes)
+  and not addressed in this review — a small XAML polish item, not a defect
+  meeting the bar for a "major issue" fix here.
+- `TimelineSummaryViewModel.Dispose()` disposes its
+  `CancellationTokenSource` without cancelling it first (`Cancel()` is never
+  called), identical to `AnalysisProgressViewModel.Dispose()`'s existing
+  shape — meaning a ViewModel torn down mid-build does not actually stop
+  the in-flight background computation early. This matches an existing,
+  pre-Phase-16 pattern in this exact codebase rather than being a new gap,
+  and no navigation-level code anywhere in this repository currently calls
+  either ViewModel's `Dispose()` at all (confirmed by search — only
+  `App.xaml.cs`'s `_serviceProvider?.Dispose()` on full app shutdown), so
+  this is unlikely to matter in practice today. Left as-is to avoid
+  unrelated scope creep into `AnalysisProgressViewModel`.
+
+#### Checklist: specific risk categories
+
+| Category | Finding |
+|---|---|
+| Web dependencies | None — no new package reference, no HTTP/socket call anywhere in the diff (confirmed by reading every changed file). |
+| Unbounded memory/concurrency | `ComputeGuaranteedSufficientReuseCap`'s relaxed cap is bounded by `MaxReuseRelaxationHeadroom` (2,000,000, unchanged after this review's reversion — see Major issue 1); each `TimelineSummaryViewModel.BuildPlan` call owns exactly one `CancellationTokenSource`, disposed and replaced each call, no unbounded fan-out. Not a violation. |
+| UI-thread work | **Found and fixed — Major issue 1.** |
+| Unsafe process invocation | N/A — no process/FFmpeg/OpenCvSharp code touched by this phase's diff at all. |
+| Timing drift | Checked deliberately: the one floating-point operation this phase introduces (`quantizedTarget / shortestPositiveDuration` in `ComputeGuaranteedSufficientReuseCap`) is proven bounded well within `long`/`double` range by `TimeSpan`'s own structural limits (max ~3.16×10^18 ticks), used only to derive an `int` *cap*, never to compute or compare an actual planned duration — every duration value in the returned `TimelinePlan` remains exact `TimeSpan`/tick arithmetic, unchanged from Phase 8. No drift risk. |
+| Silent fallback | None found — every placement that exceeds the originally-requested `MaximumReuseCount` is tagged `RelaxedConstraint.MaximumReuseCount` on its trace entry (verified by reading `PlanWithReuseCap` and by the existing `Plan_InsufficientFootage_RelaxesMaximumReuseCount_AndStillReachesTargetExactly`/property-test coverage), and `TimelineFeasibilityWarningKind.SignificantRepetition` surfaces the relaxation to the caller even when `IsComplete` is true, per the product requirement's own transparency clause. |
+| Missing cancellation | **Found and fixed — Major issue 1** (the UI-thread caller never passed a live token). `TimelinePlanner.Plan` itself already checked a passed-in token once per placement since Phase 8, unchanged and re-confirmed correct in this review. |
+| Unverifiable claims | Phase 16's report's central "800s / 520s shortfall" numeric claim was independently reproduced (see "Commands executed"), not merely trusted. This review's own worst-case latency numbers are likewise measured, not estimated. |
+| Packaging omissions | N/A — this phase's diff does not touch packaging. |
+
+### Fixes applied in this review
+
+- `src/SceneForge.App/ViewModels/TimelineSummaryViewModel.cs`: `BuildPlan`
+  converted to an async, cancelable, `Task.Run`-offloaded command with a new
+  `IsBuilding` state gating `Reshuffle`/`Continue`; implements `IDisposable`
+  for its `CancellationTokenSource`, matching `AnalysisProgressViewModel`'s
+  established shape.
+- `src/SceneForge.App/Views/TimelineSummaryView.xaml`: added an
+  `IsBuilding`-bound indeterminate `ProgressBar` and status text.
+- `tests/SceneForge.App.Tests/TestSupport/FakeTimelinePlanner.cs` (new): a
+  gate-/throw-/token-capturing test double for `ITimelinePlanner`, mirroring
+  `FakeTransitionDetector`'s existing convention.
+- `tests/SceneForge.App.Tests/ViewModels/TimelineSummaryViewModelTests.cs`:
+  4 pre-existing tests updated to await the new async shape; 3 new
+  regression tests added (mid-flight gating, live-token verification,
+  cancellation recovery) — see Major issue 1 above.
+- `src/SceneForge.Media/Planning/TimelinePlanner.cs`: `MaxReuseRelaxationHeadroom`'s
+  comment expanded to document the 200,000-vs-2,000,000 trade-off this
+  review considered and explicitly rejected, so the reasoning is not lost.
+  No behavior change from Phase 16's original value.
+
+### Conclusion
+
+No blockers. One confirmed major issue — the UI thread could freeze for
+several seconds to (in an extreme, now-measured case) over eighteen seconds,
+with no cancellation actually wired up, as a direct and unnoticed
+consequence of Phase 16's own reuse-relaxation change — was found by tracing
+the real call path from the UI down into `TimelinePlanner.Plan` rather than
+reviewing the algorithm in isolation, fixed following this codebase's own
+established async-offload pattern, and verified both by rerunning the full
+build/test suite (663/663 in both Debug and Release) and by re-measuring the
+same worst-case scenario to confirm the UI thread is no longer the one
+paying that cost. `docs/PHASE_16_REPORT.md` is updated alongside this review
+to reflect the fix and the corrected test counts.
