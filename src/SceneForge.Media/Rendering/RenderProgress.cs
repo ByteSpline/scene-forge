@@ -26,4 +26,11 @@ public sealed record RenderProgress
 
     // True on the final update (ffmpeg reported 'progress=end').
     public required bool IsFinished { get; init; }
+
+    // Set on the occasional non-ffmpeg-driven update the render service
+    // raises to explain something it is doing that the timeline position
+    // alone would not show - currently only "reducing batch size after a
+    // memory limit" during an adaptive batched render (see
+    // RenderBatchSplitEvent). Null on every ordinary progress tick.
+    public string? StatusMessage { get; init; }
 }

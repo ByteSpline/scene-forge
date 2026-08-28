@@ -18,33 +18,101 @@ internal static class RenderFilterGraphBuilder
 
     public static string Build(RenderPlan plan)
     {
-        var spec = plan.OutputSpec;
-        var segmentParts = new List<string>(plan.Segments.Count);
+        var video = BuildVideoConcat(plan.Segments, plan.OutputSpec, plan.SourceRotationDegrees);
+        var audio = BuildAudioFilter(plan.Audio);
+        return $"{video};{audio}";
+    }
+
+    // The video half only: trims every segment from input 0, normalizes each
+    // to spec, and concatenates them in order, emitting VideoOutputLabel -
+    // with no audio stage. FFmpegRenderService's batched render strategy
+    // builds one of these per BOUNDED-SIZE batch of segments (so the
+    // filtergraph node count stays small regardless of how many total
+    // segments the plan has) and then joins the batch outputs with the
+    // concat demuxer. Identical per-segment filter chain to Build.
+    public static string BuildVideoConcat(
+        IReadOnlyList<RenderSegment> segments,
+        RenderOutputSpec spec,
+        int rotationDegrees)
+    {
+        if (segments.Count == 1)
+        {
+            return BuildSegmentFilter(segments[0], spec, rotationDegrees, VideoOutputLabel.Trim('[', ']'));
+        }
+
+        var segmentParts = new List<string>(segments.Count + 1);
         var concatInputs = new StringBuilder();
 
-        for (var i = 0; i < plan.Segments.Count; i++)
+        for (var i = 0; i < segments.Count; i++)
         {
-            var segment = plan.Segments[i];
             var label = $"v{i}";
-            segmentParts.Add(BuildSegmentFilter(segment, spec, plan.SourceRotationDegrees, label));
+            segmentParts.Add(BuildSegmentFilter(segments[i], spec, rotationDegrees, label));
             concatInputs.Append('[').Append(label).Append(']');
         }
 
-        var concat = $"{concatInputs}concat=n={plan.Segments.Count}:v=1:a=0{VideoOutputLabel}";
-        var audio = BuildAudioFilter(plan.Audio);
-
-        segmentParts.Add(concat);
-        segmentParts.Add(audio);
+        segmentParts.Add($"{concatInputs}concat=n={segments.Count}:v=1:a=0{VideoOutputLabel}");
         return string.Join(';', segmentParts);
     }
 
-    private static string BuildSegmentFilter(RenderSegment segment, RenderOutputSpec spec, int rotationDegrees, string label)
+    // The audio half of the graph on its own, emitting AudioOutputLabel -
+    // reused verbatim by the concat-demuxer strategy's final mux pass, where
+    // the video is stream-copied from the pre-rendered segments and only the
+    // audio still needs the trim/reformat chain.
+    public static string BuildAudioOnlyGraph(RenderAudioTrackSpec audio) => BuildAudioFilter(audio);
+
+    // The video half for FFmpegRenderService's concat-demuxer batch
+    // strategy, where each of the batch's segments is fed by its OWN ffmpeg
+    // input ('-ss <SourceStart> -i <source>', once per segment) instead of
+    // all of them sharing input 0 through a split. The input-level seek
+    // means ffmpeg decodes ~one GOP into each segment rather than the whole
+    // source from frame 0 for every batch - the dominant cost when a plan's
+    // segments are scattered across a long source. Segment k reads from
+    // input k and trims from 0 (the '-ss' already positioned it);
+    // SourceDuration still bounds the window and FFmpegRenderService pins
+    // the exact concatenated frame count with '-frames:v', so the rendered
+    // output is frame-identical to the shared-input form - only the input
+    // label and the trim start differ. The per-segment normalization chain
+    // and the concat node are otherwise byte-identical to BuildVideoConcat.
+    public static string BuildSeekedVideoConcat(
+        IReadOnlyList<RenderSegment> segments,
+        RenderOutputSpec spec,
+        int rotationDegrees)
     {
-        var start = FormatSeconds(segment.SourceStart);
+        if (segments.Count == 1)
+        {
+            return BuildSegmentFilter(segments[0], spec, rotationDegrees, VideoOutputLabel.Trim('[', ']'), inputIndex: 0, afterInputSeek: true);
+        }
+
+        var segmentParts = new List<string>(segments.Count + 1);
+        var concatInputs = new StringBuilder();
+
+        for (var i = 0; i < segments.Count; i++)
+        {
+            var label = $"v{i}";
+            segmentParts.Add(BuildSegmentFilter(segments[i], spec, rotationDegrees, label, inputIndex: i, afterInputSeek: true));
+            concatInputs.Append('[').Append(label).Append(']');
+        }
+
+        segmentParts.Add($"{concatInputs}concat=n={segments.Count}:v=1:a=0{VideoOutputLabel}");
+        return string.Join(';', segmentParts);
+    }
+
+    private static string BuildSegmentFilter(
+        RenderSegment segment,
+        RenderOutputSpec spec,
+        int rotationDegrees,
+        string label,
+        int inputIndex = 0,
+        bool afterInputSeek = false)
+    {
+        // After an input-level '-ss <SourceStart>' seek the first frame the
+        // filter graph sees is already the segment's start, so trim from 0;
+        // without one, trim from the absolute source timestamp.
+        var start = afterInputSeek ? "0" : FormatSeconds(segment.SourceStart);
         var duration = FormatSeconds(segment.SourceDuration);
 
         var builder = new StringBuilder();
-        builder.Append("[0:v]trim=start=").Append(start).Append(":duration=").Append(duration)
+        builder.Append('[').Append(inputIndex.ToString(CultureInfo.InvariantCulture)).Append(":v]trim=start=").Append(start).Append(":duration=").Append(duration)
             .Append(",setpts=PTS-STARTPTS");
 
         AppendRotationFilters(builder, rotationDegrees);

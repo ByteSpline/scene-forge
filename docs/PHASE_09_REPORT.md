@@ -125,6 +125,24 @@ and a single encode pass over the concatenated result, the phase brief's
 "prefer a single final encoding pass" satisfied structurally rather than as
 a special-cased optimization.
 
+**Post-Phase-16 update:** this single-graph design scales the in-memory
+filtergraph with *total* segment count (~7 nodes + one `split` output + one
+`concat` input per segment), which Phase 16's never-short-output guarantee -
+combined with any long audio target - pushes into the many hundreds
+regardless of repetition (heavy reuse of a tiny clip pool, or a
+footage-rich source cut into hundreds of distinct trims). Both overflow a
+graph real ffmpeg 9.x fails to allocate. For plans past
+`FFmpegRenderService.MaxSegmentsPerFilterGraph` (60), `FFmpegRenderService`
+pre-renders the timeline in pieces and assembles them with ffmpeg's concat
+*demuxer* (video stream-copied, audio via `BuildAudioOnlyGraph`): either one
+piece per *distinct* segment (`DistinctDedup`, when a small set repeats) or
+one piece per bounded batch of <= 60 placements
+(`RenderFilterGraphBuilder.BuildVideoConcat`, the general `Batched` path).
+No single ffmpeg invocation ever carries more than 60 segments' worth of
+filtergraph. The single-graph path here stays the default for plans at or
+below 60 segments. See docs/PHASE_16_REPORT.md, the three "Post-acceptance
+fix" sections.
+
 ### Source audio removed structurally, not by an extra "mute" step
 
 `[0:a]` (the source file's own audio stream) never appears anywhere in the
@@ -149,33 +167,67 @@ a shell so the binding constraint is that Win32 limit, not `cmd.exe`'s much
 smaller 8,191-character one) it is passed inline via `-filter_complex`;
 above it, it is written to a temporary file under
 `%TEMP%\SceneForge\render-filters\<guid>.filter` and passed via
-`-filter_complex_script` instead. Exactly one file is ever written per
-render attempt, and it is always deleted in a `finally` block regardless of
-whether the render succeeded, failed, or was cancelled — a bounded,
-single-file, always-cleaned-up strategy, never an accumulating cache
-(CLAUDE.md rule 6/7). `FFmpegRenderServiceTests.RenderAsync_ManySegments_UsesFilterComplexScriptFile_AndDeletesItAfterward`
+`-/filter_complex <file>` instead. (Originally `-filter_complex_script
+<file>`; that option was removed in ffmpeg 8.0 and every current build
+rejects it — see the "Post-acceptance fix" section of
+docs/PHASE_16_REPORT.md. `-/filter_complex` is ffmpeg's generic
+"read this option's value from a file" form, available since 7.0, and is
+exactly equivalent to spelling the whole graph out inline.) Exactly one
+file is ever written per render attempt, and it is always deleted in a
+`finally` block regardless of whether the render succeeded, failed, or was
+cancelled — a bounded, single-file, always-cleaned-up strategy, never an
+accumulating cache (CLAUDE.md rule 6/7).
+`FFmpegRenderServiceTests.RenderAsync_ManySegments_UsesFilterComplexScriptFile_AndDeletesItAfterward`
 builds a 400-segment plan (its filter graph is tens of thousands of
-characters, far past the threshold), asserts `-filter_complex_script` was
-used and the file existed while ffmpeg was "running" (inside the fake
-process handler), and asserts it is gone immediately afterward;
+characters, far past the threshold), asserts `-/filter_complex <file>` was
+used (and `-filter_complex_script` never emitted) and the file existed
+while ffmpeg was "running" (inside the fake process handler), and asserts
+it is gone immediately afterward;
 `RenderAsync_FewSegments_UsesInlineFilterComplex` asserts the inline path
-for a small plan.
+for a small plan; and the real-binary
+`FFmpegRenderServiceIntegrationTests.RenderAsync_ManyClips_CrossesFilterScriptThreshold_RealFfmpegAcceptsFileForm`
+(added in Phase 16) drives an actual ffmpeg encode through this branch.
+
+The concat-demuxer strategies added post-Phase-16 (see above) use the same
+bounded, always-cleaned-up discipline for their intermediates: one temp
+directory `%TEMP%\SceneForge\render-concat\<guid>\` holds the pre-rendered
+pieces (per distinct segment, or per bounded batch), any per-batch filter
+scripts, and the demuxer list file, all deleted in a `finally` block on
+every exit path. Per-batch filter graphs past the inline char threshold are
+written *inside* that directory (not the shared `render-filters` one) so
+the single cleanup covers them. The `DistinctDedup` pre-render volume is
+bounded by the *distinct* clean-footage duration; the `Batched` one is the
+output written in bounded chunks (decoded working set: one batch at a
+time). Both are disk-space-checked up front via `IAdaptiveResourceGovernor`
+(CLAUDE.md rule 7 — see docs/PHASE_16_REPORT.md's third post-acceptance fix
+for the full rule-7 reasoning).
 
 ### Encoder selection is capability-tested, never GPU-name-inferred
 
 `HardwareEncoderProbe.SelectEncoderAsync` tries `h264_nvenc`, then
 `h264_qsv`, then `h264_amf`, then `libx264`, in that fixed order, by
-actually launching ffmpeg against a two-frame synthetic `lavfi` `color`
+actually launching ffmpeg against a short synthetic `lavfi` `color`
 source with each `-c:v` candidate and checking the process exits cleanly —
 never by reading a GPU vendor string or driver registry key. A launch
 failure (`ProcessLaunchException`) or timeout is treated exactly like a
 nonzero exit code: the candidate is skipped and the next one tried
 (`HardwareEncoderProbeTests.SelectEncoderAsync_CandidateThrowsProcessLaunchException_TreatedAsFailureAndNextCandidateTried`).
-If every candidate — including the always-expected-to-work `libx264`
-software fallback — fails its smoke test, `SelectEncoderAsync` throws
+If every candidate fails its smoke test, `SelectEncoderAsync` throws
 `RenderExecutionException` naming every candidate tried, rather than
 silently falling through to an encoder that was never actually proven to
 work.
+
+**Post-acceptance update (2026-08-28), see docs/PHASE_16_REPORT.md.** Two
+gaps were found and fixed: (1) the smoke-test clip was `64x64` (below
+NVENC's minimum dimensions — a working NVENC would false-negative) and
+passed no rate-control args, so a candidate that rejects the *real*
+preset/CRF settings was not caught; it is now a representative `320x240`
+clip encoded with the exact `EncoderQualityDefaults` a render uses. (2)
+`libx264` was the only software candidate, but SceneForge's vendored ffmpeg
+is built `--disable-libx264`; `libopenh264` is now probed after it, and
+`SelectSoftwareEncoderAsync` exposes the software-only result so
+`RunWithFallbackAsync` no longer hardcodes `libx264`. The selected encoder
+is written to `System.Diagnostics.Trace`.
 
 ### Hardware output is validated and falls back safely, at two separate layers
 
@@ -185,12 +237,14 @@ is satisfied at two distinct points, deliberately not conflated into one:
 produce *some* output at all before it is ever selected: cheap, but not
 proof a full-length, full-resolution render will succeed. (2)
 `FFmpegRenderService.RunWithFallbackAsync` still retries the entire render,
-once, with `libx264` if the selected hardware encoder's real render attempt
-exits nonzero — a real full-length render can still fail for reasons a
-two-frame smoke test cannot catch (unsupported resolution/profile, driver
-contention, VRAM exhaustion under load). If the encoder that failed was
-already `libx264` (i.e. the software fallback itself, or a caller-forced
-software selection), no retry is attempted — a second identical attempt
+once, with the probe-resolved software encoder (`libx264`, else
+`libopenh264` — never hardcoded, see the post-acceptance update above) if
+the selected hardware encoder's real render attempt exits nonzero — a real
+full-length render can still fail for reasons a short smoke test cannot
+catch (unsupported resolution/profile, driver contention, VRAM exhaustion
+under load). If the encoder that failed was already a software one (the
+fallback itself, or a caller-forced software selection), no retry is
+attempted — a second identical attempt
 against the same failure would never succeed — and `RenderExecutionException`
 is thrown immediately
 (`RenderAsync_SoftwareEncoderFails_ThrowsImmediatelyWithoutRetry` asserts

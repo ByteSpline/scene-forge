@@ -90,16 +90,84 @@ public sealed class FFmpegRenderServiceTests : IDisposable
     private sealed class FakeEncoderProbe : IHardwareEncoderProbe
     {
         private readonly VideoEncoderSelection _selection;
+        private readonly VideoEncoderSelection _softwareSelection;
 
-        public FakeEncoderProbe(VideoEncoderSelection selection)
+        public FakeEncoderProbe(VideoEncoderSelection selection, VideoEncoderSelection? softwareSelection = null)
         {
             _selection = selection;
+            _softwareSelection = softwareSelection ?? SoftwareSelection;
         }
 
         public Task<VideoEncoderSelection> SelectEncoderAsync(CancellationToken cancellationToken) => Task.FromResult(_selection);
+
+        public Task<VideoEncoderSelection> SelectSoftwareEncoderAsync(CancellationToken cancellationToken) => Task.FromResult(_softwareSelection);
     }
 
     private static bool IsRenderInvocation(ProcessExecutionRequest request) => request.Arguments.Contains("-progress");
+
+    private static bool IsConcatStageAInvocation(ProcessExecutionRequest request) =>
+        request.Arguments.Contains("-an") && request.Arguments.Contains("-frames:v") && !request.Arguments.Contains("concat");
+
+    private static bool IsConcatStageBInvocation(ProcessExecutionRequest request)
+    {
+        var args = request.Arguments.ToList();
+        var fIndex = args.IndexOf("-f");
+        return fIndex >= 0 && fIndex + 1 < args.Count && args[fIndex + 1] == "concat";
+    }
+
+    // The filter graph an invocation carries, whether inline (-filter_complex)
+    // or written to a script file (-/filter_complex) - the file still exists
+    // while the fake process "runs".
+    private static string ReadFilterGraph(ProcessExecutionRequest request)
+    {
+        var args = request.Arguments.ToList();
+        var inline = args.IndexOf("-filter_complex");
+        if (inline >= 0)
+        {
+            return args[inline + 1];
+        }
+
+        var fromFile = args.IndexOf("-/filter_complex");
+        return fromFile >= 0 ? File.ReadAllText(args[fromFile + 1]) : string.Empty;
+    }
+
+    private static int CountTrims(string filterGraph) =>
+        System.Text.RegularExpressions.Regex.Matches(filterGraph, "trim=start=").Count;
+
+    // segmentCount placements drawn from distinctWindowCount distinct source
+    // windows (round-robin), so a caller can dial in exactly the
+    // high-repetition shape ShouldUseConcatDemuxerStrategy keys on.
+    private static RenderPlan CreateRepeatingPlan(int segmentCount, int distinctWindowCount)
+    {
+        var windows = Enumerable.Range(0, distinctWindowCount)
+            .Select(w => (Start: w * 5.0, Duration: 2.0))
+            .ToArray();
+
+        var segments = Enumerable.Range(0, segmentCount)
+            .Select(i =>
+            {
+                var window = windows[i % distinctWindowCount];
+                return new RenderSegment
+                {
+                    Position = i,
+                    SourceStart = TimeSpan.FromSeconds(window.Start),
+                    SourceDuration = TimeSpan.FromSeconds(window.Duration),
+                    IsTrimmed = false,
+                };
+            })
+            .ToList();
+        var plannedDuration = segments.Aggregate(TimeSpan.Zero, (sum, s) => sum + s.SourceDuration);
+
+        return new RenderPlan
+        {
+            SourceFilePath = "source.mp4",
+            Segments = segments,
+            OutputSpec = new RenderOutputSpec { Width = 640, Height = 360, FrameRate = TwentyFiveFps },
+            Audio = new RenderAudioTrackSpec { FilePath = "audio.m4a", TrimDuration = plannedDuration },
+            SourceRotationDegrees = 0,
+            PlannedVideoDuration = plannedDuration,
+        };
+    }
 
     private static RenderOutputVerifier CreatePassingVerifier(FakeProcessRunner processRunner, TimeSpan expectedDuration)
     {
@@ -254,19 +322,36 @@ public sealed class FFmpegRenderServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task RenderAsync_ManySegments_UsesFilterComplexScriptFile_AndDeletesItAfterward()
+    public async Task RenderAsync_SinglePassGraphPastCharThreshold_UsesFilterComplexScriptFile_AndDeletesItAfterward()
     {
-        var plan = CreatePlan(segmentCount: 400);
+        // A plan right at the single-pass ceiling (InitialBatchSegmentCount)
+        // whose graph still exceeds the inline command-line threshold, so
+        // the single-pass path takes its write-to-file branch.
+        var plan = CreatePlan(segmentCount: FFmpegRenderService.InitialBatchSegmentCount);
+        Assert.Equal(FFmpegRenderService.RenderStrategy.SinglePass, FFmpegRenderService.SelectRenderStrategy(plan));
+        Assert.True(
+            RenderFilterGraphBuilder.Build(plan).Length > FFmpegRenderService.InlineFilterGraphCharacterThreshold,
+            "this test must exercise the filter-script file branch");
+
         string? observedScriptPath = null;
         var processRunner = new FakeProcessRunner((request, _) =>
         {
             if (IsRenderInvocation(request))
             {
-                var scriptIndex = request.Arguments.ToList().IndexOf("-filter_complex_script");
-                Assert.True(scriptIndex >= 0, "Expected -filter_complex_script for a large segment count.");
+                var args = request.Arguments.ToList();
+
+                // The removed '-filter_complex_script' option must never be
+                // emitted - a current ffmpeg (>= 8.0) rejects the entire
+                // invocation with "Unrecognized option
+                // 'filter_complex_script'". The large graph is handed over
+                // with ffmpeg's generic read-from-file form instead.
+                Assert.DoesNotContain("-filter_complex_script", args);
+
+                var scriptIndex = args.IndexOf("-/filter_complex");
+                Assert.True(scriptIndex >= 0, "Expected -/filter_complex <file> for a large single-pass graph.");
                 observedScriptPath = request.Arguments[scriptIndex + 1];
                 Assert.True(File.Exists(observedScriptPath), "Filter script must exist while ffmpeg is running.");
-                Assert.DoesNotContain("-filter_complex", request.Arguments.Where(a => a != "-filter_complex_script"));
+                Assert.DoesNotContain("-filter_complex", args);
             }
 
             return Task.FromResult(new ProcessExecutionResult { ExitCode = 0, StandardOutput = "", StandardError = "", Elapsed = TimeSpan.Zero });
@@ -289,6 +374,7 @@ public sealed class FFmpegRenderServiceTests : IDisposable
             {
                 Assert.Contains("-filter_complex", request.Arguments);
                 Assert.DoesNotContain("-filter_complex_script", request.Arguments);
+                Assert.DoesNotContain("-/filter_complex", request.Arguments);
             }
 
             return Task.FromResult(new ProcessExecutionResult { ExitCode = 0, StandardOutput = "", StandardError = "", Elapsed = TimeSpan.Zero });
@@ -314,5 +400,467 @@ public sealed class FFmpegRenderServiceTests : IDisposable
         var service = new FFmpegRenderService(processRunner, new FakeFfmpegToolLocator(), new FakeEncoderProbe(SoftwareSelection), CreatePassingVerifier(processRunner, plan.PlannedVideoDuration), AlwaysSufficientResourceGovernor);
 
         await service.RenderAsync(plan, Path.Combine(_outputDirectory, "out.mp4"), null, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task RenderAsync_HighRepetitionPlan_PreRendersEachDistinctSegmentOnceThenConcats()
+    {
+        // 300 placements, 10 distinct windows - well past
+        // ConcatDemuxerSegmentThreshold and far below the distinct/total
+        // ratio, so the concat-demuxer strategy is taken.
+        var plan = CreateRepeatingPlan(segmentCount: 300, distinctWindowCount: 10);
+        var processRunner = new FakeProcessRunner((_, _) => Task.FromResult(new ProcessExecutionResult { ExitCode = 0, StandardOutput = "", StandardError = "", Elapsed = TimeSpan.Zero }));
+        var service = new FFmpegRenderService(processRunner, new FakeFfmpegToolLocator(), new FakeEncoderProbe(SoftwareSelection), CreatePassingVerifier(processRunner, plan.PlannedVideoDuration), AlwaysSufficientResourceGovernor);
+
+        await service.RenderAsync(plan, Path.Combine(_outputDirectory, "out.mp4"), null, CancellationToken.None);
+
+        // Exactly one Stage A encode per distinct window, exactly one Stage B
+        // concat pass - never one ffmpeg node per placement.
+        Assert.Equal(10, processRunner.Requests.Count(IsConcatStageAInvocation));
+        Assert.Equal(1, processRunner.Requests.Count(IsConcatStageBInvocation));
+
+        var stageA = processRunner.Requests.First(IsConcatStageAInvocation).Arguments.ToList();
+        Assert.Contains("-filter_complex", stageA);
+        Assert.Contains("-frames:v", stageA);
+        Assert.Contains("-an", stageA);
+        Assert.DoesNotContain("-progress", stageA);
+
+        var stageB = processRunner.Requests.First(IsConcatStageBInvocation).Arguments.ToList();
+        Assert.Equal("concat", stageB[stageB.IndexOf("-f") + 1]);
+        Assert.Contains("-safe", stageB);
+        Assert.Equal("copy", stageB[stageB.IndexOf("-c:v") + 1]);
+        Assert.DoesNotContain("0:a", stageB);
+    }
+
+    [Fact]
+    public async Task RenderAsync_HighRepetitionPlan_ConcatListHasOneLinePerPlacementInTimelineOrder()
+    {
+        var plan = CreateRepeatingPlan(segmentCount: 250, distinctWindowCount: 8);
+        string? listContent = null;
+        var processRunner = new FakeProcessRunner((request, _) =>
+        {
+            if (IsConcatStageBInvocation(request))
+            {
+                var args = request.Arguments.ToList();
+                var listPath = args[args.IndexOf("-i") + 1];
+                listContent = File.ReadAllText(listPath);
+            }
+
+            return Task.FromResult(new ProcessExecutionResult { ExitCode = 0, StandardOutput = "", StandardError = "", Elapsed = TimeSpan.Zero });
+        });
+        var service = new FFmpegRenderService(processRunner, new FakeFfmpegToolLocator(), new FakeEncoderProbe(SoftwareSelection), CreatePassingVerifier(processRunner, plan.PlannedVideoDuration), AlwaysSufficientResourceGovernor);
+
+        await service.RenderAsync(plan, Path.Combine(_outputDirectory, "out.mp4"), null, CancellationToken.None);
+
+        Assert.NotNull(listContent);
+        var lines = listContent!.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        Assert.Equal(250, lines.Length);
+        Assert.All(lines, line => Assert.StartsWith("file '", line));
+
+        // Placement i uses distinct window (i % 8); the same window always
+        // resolves to the same pre-rendered file, so the list's file cycle
+        // has period 8.
+        Assert.Equal(lines[0], lines[8]);
+        Assert.NotEqual(lines[0], lines[1]);
+    }
+
+    [Fact]
+    public async Task RenderAsync_HighRepetitionPlan_DeletesPreRenderWorkingDirectoryAfterward()
+    {
+        var plan = CreateRepeatingPlan(segmentCount: 200, distinctWindowCount: 6);
+        string? workingDirectory = null;
+        var processRunner = new FakeProcessRunner((request, _) =>
+        {
+            if (IsConcatStageBInvocation(request))
+            {
+                var args = request.Arguments.ToList();
+                workingDirectory = Path.GetDirectoryName(args[args.IndexOf("-i") + 1]);
+                Assert.True(Directory.Exists(workingDirectory), "Working directory must exist while ffmpeg is running.");
+            }
+
+            return Task.FromResult(new ProcessExecutionResult { ExitCode = 0, StandardOutput = "", StandardError = "", Elapsed = TimeSpan.Zero });
+        });
+        var service = new FFmpegRenderService(processRunner, new FakeFfmpegToolLocator(), new FakeEncoderProbe(SoftwareSelection), CreatePassingVerifier(processRunner, plan.PlannedVideoDuration), AlwaysSufficientResourceGovernor);
+
+        await service.RenderAsync(plan, Path.Combine(_outputDirectory, "out.mp4"), null, CancellationToken.None);
+
+        Assert.NotNull(workingDirectory);
+        Assert.False(Directory.Exists(workingDirectory), "Pre-render working directory must be deleted after the render completes.");
+    }
+
+    [Fact]
+    public async Task RenderAsync_LargeAllDistinctPlan_UsesBatchedPreRender()
+    {
+        // 305 placements, all distinct - past the single-pass ceiling with
+        // NO repetition, so DistinctDedup does not apply. The Batched
+        // strategy renders the timeline in bounded filter_complex batches
+        // and concat-demuxes the batch outputs.
+        var plan = CreateRepeatingPlan(segmentCount: 305, distinctWindowCount: 305);
+        Assert.Equal(FFmpegRenderService.RenderStrategy.Batched, FFmpegRenderService.SelectRenderStrategy(plan));
+
+        string? listContent = null;
+        var batchTrimCounts = new List<int>();
+        var processRunner = new FakeProcessRunner((request, _) =>
+        {
+            if (IsConcatStageAInvocation(request))
+            {
+                batchTrimCounts.Add(CountTrims(ReadFilterGraph(request)));
+            }
+            else if (IsConcatStageBInvocation(request))
+            {
+                var args = request.Arguments.ToList();
+                listContent = File.ReadAllText(args[args.IndexOf("-i") + 1]);
+            }
+
+            return Task.FromResult(new ProcessExecutionResult { ExitCode = 0, StandardOutput = "", StandardError = "", Elapsed = TimeSpan.Zero });
+        });
+        var service = new FFmpegRenderService(processRunner, new FakeFfmpegToolLocator(), new FakeEncoderProbe(SoftwareSelection), CreatePassingVerifier(processRunner, plan.PlannedVideoDuration), AlwaysSufficientResourceGovernor);
+
+        await service.RenderAsync(plan, Path.Combine(_outputDirectory, "out.mp4"), null, CancellationToken.None);
+
+        // ceil(305 / 60) = 6 batches, each a bounded filter_complex encode; one concat pass.
+        var expectedBatches = (int)Math.Ceiling(305.0 / FFmpegRenderService.InitialBatchSegmentCount);
+        Assert.Equal(expectedBatches, processRunner.Requests.Count(IsConcatStageAInvocation));
+        Assert.Equal(1, processRunner.Requests.Count(IsConcatStageBInvocation));
+        // The only progress-reporting ffmpeg invocation is the concat pass -
+        // the single-pass render path (also progress-reporting) never ran.
+        Assert.Equal(1, processRunner.Requests.Count(IsRenderInvocation));
+        Assert.All(processRunner.Requests.Where(IsRenderInvocation), r => Assert.True(IsConcatStageBInvocation(r)));
+
+        // No per-batch filter graph carries more than InitialBatchSegmentCount trims,
+        // and every segment is accounted for exactly once across the batches.
+        Assert.All(batchTrimCounts, count => Assert.InRange(count, 1, FFmpegRenderService.InitialBatchSegmentCount));
+        Assert.Equal(305, batchTrimCounts.Sum());
+
+        Assert.NotNull(listContent);
+        Assert.Equal(expectedBatches, listContent!.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length);
+    }
+
+    [Fact]
+    public async Task RenderAsync_HighRepetitionPlan_HardwareStageAFails_FallsBackToLibx264ForAllSegments()
+    {
+        var plan = CreateRepeatingPlan(segmentCount: 180, distinctWindowCount: 5);
+        var attempts = new List<string>();
+        var processRunner = new FakeProcessRunner((request, _) =>
+        {
+            if (IsConcatStageAInvocation(request))
+            {
+                var encoderName = request.Arguments.ToList()[request.Arguments.ToList().IndexOf("-c:v") + 1];
+                attempts.Add(encoderName);
+                var exitCode = encoderName == "h264_nvenc" ? 1 : 0;
+                return Task.FromResult(new ProcessExecutionResult { ExitCode = exitCode, StandardOutput = "", StandardError = "nvenc boom", Elapsed = TimeSpan.Zero });
+            }
+
+            return Task.FromResult(new ProcessExecutionResult { ExitCode = 0, StandardOutput = "", StandardError = "", Elapsed = TimeSpan.Zero });
+        });
+        var service = new FFmpegRenderService(processRunner, new FakeFfmpegToolLocator(), new FakeEncoderProbe(HardwareSelection), CreatePassingVerifier(processRunner, plan.PlannedVideoDuration), AlwaysSufficientResourceGovernor);
+
+        var result = await service.RenderAsync(plan, Path.Combine(_outputDirectory, "out.mp4"), null, CancellationToken.None);
+
+        Assert.True(result.FellBackToSoftwareEncoder);
+        Assert.Equal(VideoEncoderKind.SoftwareX264, result.Encoder.Kind);
+        // First attempt bails after the first distinct segment fails; the
+        // libx264 retry re-encodes all 5 distinct segments.
+        Assert.Equal("h264_nvenc", attempts[0]);
+        Assert.Equal(5, attempts.Count(a => a == "libx264"));
+        // Stage B (stream copy) never re-encodes video, so it is never a
+        // fallback trigger.
+        Assert.Equal(1, processRunner.Requests.Count(IsConcatStageBInvocation));
+    }
+
+    [Fact]
+    public async Task RenderAsync_BatchedPlan_HardwareBatchFails_FallsBackToLibx264ForAllBatches()
+    {
+        var plan = CreateRepeatingPlan(segmentCount: 305, distinctWindowCount: 305); // -> Batched, 6 batches
+        var attempts = new List<string>();
+        var processRunner = new FakeProcessRunner((request, _) =>
+        {
+            if (IsConcatStageAInvocation(request))
+            {
+                var encoderName = request.Arguments.ToList()[request.Arguments.ToList().IndexOf("-c:v") + 1];
+                attempts.Add(encoderName);
+                var exitCode = encoderName == "h264_nvenc" ? 1 : 0;
+                return Task.FromResult(new ProcessExecutionResult { ExitCode = exitCode, StandardOutput = "", StandardError = "nvenc boom", Elapsed = TimeSpan.Zero });
+            }
+
+            return Task.FromResult(new ProcessExecutionResult { ExitCode = 0, StandardOutput = "", StandardError = "", Elapsed = TimeSpan.Zero });
+        });
+        var service = new FFmpegRenderService(processRunner, new FakeFfmpegToolLocator(), new FakeEncoderProbe(HardwareSelection), CreatePassingVerifier(processRunner, plan.PlannedVideoDuration), AlwaysSufficientResourceGovernor);
+
+        var result = await service.RenderAsync(plan, Path.Combine(_outputDirectory, "out.mp4"), null, CancellationToken.None);
+
+        Assert.True(result.FellBackToSoftwareEncoder);
+        Assert.Equal(VideoEncoderKind.SoftwareX264, result.Encoder.Kind);
+        Assert.Equal("h264_nvenc", attempts[0]);
+        // libx264 retry re-renders every batch; ceil(305/60) = 6.
+        Assert.Equal(6, attempts.Count(a => a == "libx264"));
+        Assert.Equal(1, processRunner.Requests.Count(IsConcatStageBInvocation));
+    }
+
+    [Fact]
+    public async Task RenderAsync_HighRepetitionPlan_ReportsProgressAcrossBothStages()
+    {
+        var plan = CreateRepeatingPlan(segmentCount: 200, distinctWindowCount: 4);
+        var processRunner = new FakeProcessRunner((request, _) =>
+        {
+            if (IsConcatStageBInvocation(request))
+            {
+                request.OutputProgress?.Report(new ProcessOutputLine(ProcessOutputChannel.StandardOutput, "out_time_us=200000000"));
+                request.OutputProgress?.Report(new ProcessOutputLine(ProcessOutputChannel.StandardOutput, "progress=end"));
+            }
+
+            return Task.FromResult(new ProcessExecutionResult { ExitCode = 0, StandardOutput = "", StandardError = "", Elapsed = TimeSpan.Zero });
+        });
+        var service = new FFmpegRenderService(processRunner, new FakeFfmpegToolLocator(), new FakeEncoderProbe(SoftwareSelection), CreatePassingVerifier(processRunner, plan.PlannedVideoDuration), AlwaysSufficientResourceGovernor);
+        var progress = new RecordingProgress<RenderProgress>();
+
+        await service.RenderAsync(plan, Path.Combine(_outputDirectory, "out.mp4"), progress, CancellationToken.None);
+
+        // 4 Stage A updates (one per distinct segment) + at least one Stage B update.
+        Assert.True(progress.Reports.Count >= 5, $"expected >=5 progress reports, got {progress.Reports.Count}");
+        Assert.True(progress.Reports.Select(r => r.OutTime).SequenceEqual(progress.Reports.Select(r => r.OutTime).OrderBy(t => t)), "progress OutTime must be monotonically non-decreasing");
+        Assert.True(progress.Reports[^1].IsFinished);
+    }
+
+    // --- Input-seeking (performance fix 1): each batch/dedup ffmpeg must
+    // seek directly to every segment's SourceStart with an input-level
+    // '-ss <n> -i <source>' pair, instead of one shared '-i' that decodes
+    // the whole source from frame 0 for every batch. -------------------------
+
+    // The '-ss <value>' input-seek pairs in front of the filter graph, in
+    // order. Each entry is (seekSeconds, isFollowedByInputOfSource).
+    private static List<(double SeekSeconds, bool ThenInput)> InputSeeks(ProcessExecutionRequest request, string sourcePath)
+    {
+        var args = request.Arguments.ToList();
+        var graphAt = args.FindIndex(a => a is "-filter_complex" or "-/filter_complex");
+        var scan = graphAt < 0 ? args.Count : graphAt;
+        var seeks = new List<(double, bool)>();
+        for (var i = 0; i < scan; i++)
+        {
+            if (args[i] != "-ss")
+            {
+                continue;
+            }
+
+            var seconds = double.Parse(args[i + 1], System.Globalization.CultureInfo.InvariantCulture);
+            var thenInput = i + 3 < args.Count && args[i + 2] == "-i" && args[i + 3] == sourcePath;
+            seeks.Add((seconds, thenInput));
+        }
+
+        return seeks;
+    }
+
+    [Fact]
+    public async Task RenderAsync_BatchedPlan_SeeksToEverySegmentSourceStart_NotASingleFullDecode()
+    {
+        // 305 distinct segments -> Batched, 6 bounded batches. Segment i's
+        // SourceStart is i*5s (CreateRepeatingPlan), so a Position-ordered
+        // batch spans a wide, scattered source range - exactly the shape a
+        // single shared decode reads almost the whole source for.
+        var plan = CreateRepeatingPlan(segmentCount: 305, distinctWindowCount: 305);
+        Assert.Equal(FFmpegRenderService.RenderStrategy.Batched, FFmpegRenderService.SelectRenderStrategy(plan));
+
+        // Read the graph and seeks INSIDE the handler - the working directory
+        // (and any filter-script file) is deleted once the render returns.
+        var batches = new List<(List<(double SeekSeconds, bool ThenInput)> Seeks, string Graph)>();
+        var processRunner = new FakeProcessRunner((request, _) =>
+        {
+            if (IsConcatStageAInvocation(request))
+            {
+                batches.Add((InputSeeks(request, plan.SourceFilePath), ReadFilterGraph(request)));
+            }
+
+            return Task.FromResult(new ProcessExecutionResult { ExitCode = 0, StandardOutput = "", StandardError = "", Elapsed = TimeSpan.Zero });
+        });
+        var service = new FFmpegRenderService(processRunner, new FakeFfmpegToolLocator(), new FakeEncoderProbe(SoftwareSelection), CreatePassingVerifier(processRunner, plan.PlannedVideoDuration), AlwaysSufficientResourceGovernor);
+
+        await service.RenderAsync(plan, Path.Combine(_outputDirectory, "out.mp4"), null, CancellationToken.None);
+
+        Assert.Equal(6, batches.Count);
+
+        var expectedStartsInOrder = plan.Segments
+            .OrderBy(s => s.Position)
+            .Select(s => Math.Round(s.SourceStart.TotalSeconds, 6))
+            .ToList();
+        var seenStarts = new List<double>();
+        foreach (var (seeks, graph) in batches)
+        {
+            // Every segment in the batch is reached by its own '-ss <start> -i <source>'.
+            Assert.NotEmpty(seeks);
+            Assert.All(seeks, s => Assert.True(s.ThenInput, "each -ss must be immediately followed by '-i <source>'"));
+
+            // The graph reads one input per segment ([0:v],[1:v],...), each
+            // trimming from 0 because the input is already seeked - never a
+            // single [0:v] trimming from a large absolute timestamp.
+            Assert.Equal(seeks.Count, CountTrims(graph));
+            // Every trim starts at 0 (the -ss already positioned the input) -
+            // never a large absolute source timestamp.
+            Assert.Equal(seeks.Count, System.Text.RegularExpressions.Regex.Matches(graph, @"trim=start=0:").Count);
+            for (var k = 0; k < seeks.Count; k++)
+            {
+                Assert.Contains($"[{k}:v]trim=start=0:", graph);
+            }
+
+            seenStarts.AddRange(seeks.Select(s => Math.Round(s.SeekSeconds, 6)));
+        }
+
+        // Across all batches, exactly the plan's segment SourceStarts, once each, in Position order.
+        Assert.Equal(expectedStartsInOrder, seenStarts);
+    }
+
+    [Fact]
+    public async Task RenderAsync_DistinctDedupPlan_SeeksToEachDistinctWindowStart()
+    {
+        var plan = CreateRepeatingPlan(segmentCount: 300, distinctWindowCount: 10);
+        Assert.Equal(FFmpegRenderService.RenderStrategy.DistinctDedup, FFmpegRenderService.SelectRenderStrategy(plan));
+
+        var runs = new List<(List<(double SeekSeconds, bool ThenInput)> Seeks, string Graph)>();
+        var processRunner = new FakeProcessRunner((request, _) =>
+        {
+            if (IsConcatStageAInvocation(request))
+            {
+                runs.Add((InputSeeks(request, plan.SourceFilePath), ReadFilterGraph(request)));
+            }
+
+            return Task.FromResult(new ProcessExecutionResult { ExitCode = 0, StandardOutput = "", StandardError = "", Elapsed = TimeSpan.Zero });
+        });
+        var service = new FFmpegRenderService(processRunner, new FakeFfmpegToolLocator(), new FakeEncoderProbe(SoftwareSelection), CreatePassingVerifier(processRunner, plan.PlannedVideoDuration), AlwaysSufficientResourceGovernor);
+
+        await service.RenderAsync(plan, Path.Combine(_outputDirectory, "out.mp4"), null, CancellationToken.None);
+
+        Assert.Equal(10, runs.Count);
+        var distinctStarts = plan.Segments.Select(s => Math.Round(s.SourceStart.TotalSeconds, 6)).Distinct().OrderBy(v => v).ToList();
+        var seekedStarts = new List<double>();
+        foreach (var (seeks, graph) in runs)
+        {
+            var single = Assert.Single(seeks);
+            Assert.True(single.ThenInput);
+            seekedStarts.Add(Math.Round(single.SeekSeconds, 6));
+            Assert.Contains("[0:v]trim=start=0:", graph);
+        }
+
+        Assert.Equal(distinctStarts, seekedStarts.OrderBy(v => v).ToList());
+    }
+
+    [Fact]
+    public async Task RenderAsync_BatchedPlan_StillPinsConcatenatedFrameCount_AfterSeekChange()
+    {
+        // Phase 16 frame-exact guarantee: -frames:v on each Stage A batch
+        // still equals the sum of that batch's per-segment quantized frame
+        // counts, unchanged by the switch to per-segment input seeks.
+        var plan = CreateRepeatingPlan(segmentCount: 130, distinctWindowCount: 130); // -> Batched, 3 batches (60/60/10)
+        var stageAFrameCounts = new List<long>();
+        var processRunner = new FakeProcessRunner((request, _) =>
+        {
+            if (IsConcatStageAInvocation(request))
+            {
+                var args = request.Arguments.ToList();
+                stageAFrameCounts.Add(long.Parse(args[args.IndexOf("-frames:v") + 1], System.Globalization.CultureInfo.InvariantCulture));
+            }
+
+            return Task.FromResult(new ProcessExecutionResult { ExitCode = 0, StandardOutput = "", StandardError = "", Elapsed = TimeSpan.Zero });
+        });
+        var service = new FFmpegRenderService(processRunner, new FakeFfmpegToolLocator(), new FakeEncoderProbe(SoftwareSelection), CreatePassingVerifier(processRunner, plan.PlannedVideoDuration), AlwaysSufficientResourceGovernor);
+
+        await service.RenderAsync(plan, Path.Combine(_outputDirectory, "out.mp4"), null, CancellationToken.None);
+
+        var expectedTotal = plan.Segments.Sum(s => Math.Max(1, plan.OutputSpec.FrameRate.ToFrameCount(s.SourceDuration)));
+        Assert.Equal(expectedTotal, stageAFrameCounts.Sum());
+    }
+
+    // --- Encoder selection logging (performance fix 2) --------------------
+
+    private sealed class CapturingTraceListener : System.Diagnostics.TraceListener
+    {
+        private readonly System.Text.StringBuilder _buffer = new();
+
+        public string Text
+        {
+            get
+            {
+                lock (_buffer)
+                {
+                    return _buffer.ToString();
+                }
+            }
+        }
+
+        public override void Write(string? message)
+        {
+            lock (_buffer)
+            {
+                _buffer.Append(message);
+            }
+        }
+
+        public override void WriteLine(string? message)
+        {
+            lock (_buffer)
+            {
+                _buffer.Append(message).Append('\n');
+            }
+        }
+    }
+
+    [Theory]
+    [InlineData(true, "h264_nvenc", "hardware-accelerated")]
+    [InlineData(false, "libx264", "software")]
+    public async Task RenderAsync_LogsWhichEncoderTheProbeSelected(bool hardware, string encoderName, string accelWord)
+    {
+        var plan = CreatePlan();
+        var selection = new VideoEncoderSelection { Kind = hardware ? VideoEncoderKind.NvidiaNvenc : VideoEncoderKind.SoftwareX264, FfmpegEncoderName = encoderName, IsHardwareAccelerated = hardware };
+        var processRunner = new FakeProcessRunner((_, _) => Task.FromResult(new ProcessExecutionResult { ExitCode = 0, StandardOutput = "", StandardError = "", Elapsed = TimeSpan.Zero }));
+        var service = new FFmpegRenderService(processRunner, new FakeFfmpegToolLocator(), new FakeEncoderProbe(selection), CreatePassingVerifier(processRunner, plan.PlannedVideoDuration), AlwaysSufficientResourceGovernor);
+
+        var listener = new CapturingTraceListener();
+        System.Diagnostics.Trace.Listeners.Add(listener);
+        try
+        {
+            await service.RenderAsync(plan, Path.Combine(_outputDirectory, "out.mp4"), null, CancellationToken.None);
+        }
+        finally
+        {
+            System.Diagnostics.Trace.Listeners.Remove(listener);
+        }
+
+        Assert.Contains($"encoder probe selected '{encoderName}'", listener.Text);
+        Assert.Contains(accelWord, listener.Text);
+    }
+
+    [Fact]
+    public async Task RenderAsync_HardwareRenderFails_LogsTheSoftwareEncoderItRetriesWith()
+    {
+        var plan = CreatePlan();
+        var attempt = 0;
+        var processRunner = new FakeProcessRunner((request, _) =>
+        {
+            if (IsRenderInvocation(request))
+            {
+                attempt++;
+                return Task.FromResult(new ProcessExecutionResult { ExitCode = attempt == 1 ? 1 : 0, StandardOutput = "", StandardError = "gpu boom", Elapsed = TimeSpan.Zero });
+            }
+
+            return Task.FromResult(new ProcessExecutionResult { ExitCode = 0, StandardOutput = "", StandardError = "", Elapsed = TimeSpan.Zero });
+        });
+        var software = new VideoEncoderSelection { Kind = VideoEncoderKind.SoftwareOpenH264, FfmpegEncoderName = "libopenh264", IsHardwareAccelerated = false };
+        var service = new FFmpegRenderService(processRunner, new FakeFfmpegToolLocator(), new FakeEncoderProbe(HardwareSelection, software), CreatePassingVerifier(processRunner, plan.PlannedVideoDuration), AlwaysSufficientResourceGovernor);
+
+        var listener = new CapturingTraceListener();
+        System.Diagnostics.Trace.Listeners.Add(listener);
+        RenderResult result;
+        try
+        {
+            result = await service.RenderAsync(plan, Path.Combine(_outputDirectory, "out.mp4"), null, CancellationToken.None);
+        }
+        finally
+        {
+            System.Diagnostics.Trace.Listeners.Remove(listener);
+        }
+
+        // The fallback resolves to whatever the probe reports as the software
+        // encoder - never a hardcoded name - and that choice is logged.
+        Assert.True(result.FellBackToSoftwareEncoder);
+        Assert.Equal("libopenh264", result.Encoder.FfmpegEncoderName);
+        Assert.Contains("retrying the whole render with software encoder 'libopenh264'", listener.Text);
     }
 }

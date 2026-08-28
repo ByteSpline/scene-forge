@@ -21,4 +21,12 @@ public sealed record RenderResult
     public required TimeSpan Elapsed { get; init; }
 
     public required RenderVerificationResult Verification { get; init; }
+
+    // Empty for a single-pass render and for a batched render that never hit
+    // a memory limit. Otherwise one entry per batch that ffmpeg failed to
+    // allocate and FFmpegRenderService automatically re-rendered as two
+    // smaller batches - see RenderBatchSplitEvent. A non-empty list means
+    // the render still succeeded; it is a record of the adaptive sizing the
+    // service did to get there, not a failure.
+    public IReadOnlyList<RenderBatchSplitEvent> BatchSplitEvents { get; init; } = [];
 }
