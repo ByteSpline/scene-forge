@@ -52,6 +52,395 @@ review), `SceneForge.Media.Tests` unchanged at 514 (the review's diff inside
 `TimelinePlanner.cs` was comment-only, `MaxReuseRelaxationHeadroom`'s value
 unchanged), full solution 663/663 in both Debug and Release.
 
+## Post-acceptance fix (2026-08-27): removed ffmpeg option broke every many-clip render
+
+Manual end-to-end testing of a real edit that produced many short clips —
+exactly what this phase's never-short-output guarantee makes more common,
+since reuse-cap escalation can now repeat a small clip pool dozens of times
+to fill a long target — failed at the render step with:
+
+```
+ffmpeg render with encoder 'libx264' failed (exit code -1414549496):
+Unrecognized option 'filter_complex_script'.
+Error splitting the argument list: Option not found
+```
+
+**Root cause.** `FFmpegRenderService` builds one `filter_complex` graph for
+the whole edit and, when that graph would get long enough to risk the
+Win32 command-line limit (`InlineFilterGraphCharacterThreshold`, 6,000
+chars — roughly 25+ segments), writes it to a temp file and passes the file
+to ffmpeg instead of inlining it. That fallback (designed in Phase 9) had
+never run against real ffmpeg before — every test that reached it used a
+fake process runner that only string-matched the argument name — and it
+passed the graph with `-filter_complex_script <file>`. That option was
+**deprecated in ffmpeg 7.0 (2024-04) and removed in 8.0**; SceneForge's
+own bundled/expected ffmpeg is 9.x, which rejects the entire invocation
+before doing any work. The leading dash was never missing — ffmpeg always
+prints an unknown option without its dash — this was a removed option, not
+a formatting bug.
+
+**Fix.** Pass the file with ffmpeg's generic "read this option's value
+from a file" form, `-/filter_complex <file>` (available since 7.0, the
+documented replacement). Verified directly against ffmpeg 9.0.1: the old
+form reproduces the exact error above, the new form renders identically to
+an inline `-filter_complex`. One line of production change in
+`FFmpegRenderService.BuildFilterArguments`, plus the option strings lifted
+to named `internal const`s so tests can reference them.
+
+**Test gap closed.**
+
+- `FFmpegRenderServiceTests.RenderAsync_ManySegments_UsesFilterComplexScriptFile_AndDeletesItAfterward`
+  updated: now asserts the removed `-filter_complex_script` is *never*
+  emitted and that `-/filter_complex <file>` is used instead.
+- New real-ffmpeg integration test
+  `FFmpegRenderServiceIntegrationTests.RenderAsync_ManyClips_CrossesFilterScriptThreshold_RealFfmpegAcceptsFileForm`:
+  builds a 48-clip plan (each an exact 3-frame slice so quantization is a
+  no-op and the test isolates the filter-script path), asserts white-box
+  that the resulting graph really does exceed
+  `InlineFilterGraphCharacterThreshold` (~10,300 chars), then requires a
+  real ffmpeg encode of that plan to succeed and pass duration/stream
+  verification (actual output duration matched the plan exactly, delta 0).
+  Skipped in CI like every other real-binary test; runs locally where
+  `tools/ffmpeg` is staged.
+
+`SceneForge.Media.Tests` is now 515 (was 514); full solution 664. Format,
+Release build of `SceneForge.Media`, and the full Release test run are all
+green. (The `SceneForge.App` Release build could not be re-linked during
+this fix because the app was running for manual testing and held its output
+DLLs locked — an environmental lock, not a compile error; nothing in this
+fix touches `SceneForge.App`.)
+
+## Post-acceptance fix (2026-08-27): extreme source:target ratios made the filter graph infeasible for ffmpeg
+
+Continued manual end-to-end testing of the same class of edit — the one
+this phase's never-short-output guarantee makes common — hit a second,
+deeper failure. With **very** limited clean footage (19 clips, ~67s total)
+against a **22-minute** audio target, the render step failed with `Cannot
+allocate memory` and, on runs that did not OOM outright, an estimated
+render time around **17 hours**.
+
+**Root cause — confirmed empirically, not estimated.**
+`HighRepetitionRenderScenarioTests` plans that exact scenario with the real
+`TimelinePlanner` at production defaults (`MaximumReuseCount = 1`, 30 fps,
+seed 1) and measures:
+
+| Quantity | Value |
+|---|---|
+| Placements produced | **378** (each of the 19 clips reused ~20×) |
+| Distinct source ranges | **20** (19 clips + 1 trimmed final placement) |
+| `filter_complex` graph length | **~80,400 characters** |
+| Approx. libavfilter nodes | **~2,650**, fed by a **378-way `split`** off one decoded input and a **378-way `concat`** |
+
+Phase 16's reuse-cap escalation is mathematically correct — the plan
+*does* match the audio exactly. The defect is entirely in the renderer:
+Phase 9's `RenderFilterGraphBuilder` emits one
+`trim→setpts→scale→pad→fps→format→setsar` chain **per placement**, plus one
+implicit `split` output and one `concat` input per placement, so the
+in-memory filtergraph scales with **total segment count**, not **distinct
+clip count**. `concat` drains its 378 inputs strictly in order while every
+input derives from a single `split`, so the split's not-yet-read output
+FIFOs back into buffering the whole decoded source hundreds of times over —
+allocation failure, or pathological scheduling of a ~2,650-node graph. It
+is also, at that scale, a latent CLAUDE.md rule 7 violation (near-whole-
+source buffering) that the never-short guarantee made reachable in
+practice. The `-/filter_complex` fix above is unrelated and does not help
+here — the problem is the graph ffmpeg builds internally, not the command
+line.
+
+**Fix — two-stage render via ffmpeg's concat *demuxer* for high-repetition
+plans.** `FFmpegRenderService.RenderAsync` now chooses a strategy per plan
+(`ShouldUseConcatDemuxerStrategy`):
+
+- **Below `ConcatDemuxerSegmentThreshold` (60 segments), or a large plan
+  with little repetition** — the existing single-pass filter graph,
+  unchanged and still the default. (A large *low-repetition* plan stays
+  here deliberately: pre-rendering it would just buffer the whole output to
+  disk. That case is called out under Outstanding.)
+- **Past the threshold *and* distinct segments ≤ 50% of total** (i.e. every
+  distinct segment reused ≥ ~2× on average) — a new two-stage path:
+  - **Stage A** encodes each *distinct* `(SourceStart, SourceDuration)`
+    window exactly once, applying the identical per-segment normalization
+    (`RenderFilterGraphBuilder.BuildSingleSegmentVideoGraph`), pinned to the
+    plan's frame-quantized length with `-frames:v` so the concatenated
+    total stays frame-exact against `PlannedVideoDuration`. For the 19-clip
+    scenario that is **20 short encodes (~67s of video), not 378**.
+  - **Stage B** writes a concat-demuxer list file (one `file '…'` line per
+    placement, in timeline order, with the demuxer's `'\''` quoting) and
+    runs one `ffmpeg -f concat -safe 0 -i list -i audio -c:v copy …` pass:
+    the assembled video is **stream-copied** (no re-encode of the 22-minute
+    timeline) while the supplied audio is trimmed/encoded in the same pass
+    (`RenderFilterGraphBuilder.BuildAudioOnlyGraph`, `-map 0:v:0 -map
+    [aout]` — the source's own audio is still never referenced).
+
+  Every intermediate lives under one temp directory
+  (`%TEMP%\SceneForge\render-concat\<guid>\`) deleted in a `finally` block,
+  success or failure — the same bounded, always-cleaned-up discipline as
+  the filter-script file. Disk space for the pre-renders is checked up
+  front via the existing `IAdaptiveResourceGovernor`, sized by the
+  *distinct* footage volume (bounded by extraction), never the output
+  duration. Hardware-encoder fallback wraps Stage A: if an NVENC/QSV/AMF
+  segment encode fails, the whole attempt is retried with libx264 (all
+  distinct segments re-encoded); Stage B is always `-c:v copy` so it can
+  never be an encoder-specific failure. Progress reporting sweeps Stage A
+  across the first 95% of the bar (it is nearly all the wall-clock cost for
+  a high-repetition plan) and maps Stage B's real `-progress` stream into
+  the last 5%.
+
+Total video-encode work is *strictly less* than the single-pass path (each
+distinct segment encoded once instead of every repetition re-encoded), and
+the strategy scales to any segment count.
+
+**Verified end to end against real ffmpeg 9.0.1.**
+`FFmpegRenderServiceIntegrationTests.RenderAsync_HighRepetitionPlan_RealFfmpegPreRendersDistinctSegmentsAndConcats`
+drives the path with 6 distinct 0.2s windows repeated to **150 placements**
+(30s output): pre-renders 6 segments, concat-assembles the rest, and the
+verified output duration matches the plan **exactly (delta 0)** with one
+audio stream — in **~5 seconds** where the old path projected ~17 hours.
+
+**Tests added (all green, `tools/ffmpeg` staged locally so none skip):**
+
+- `HighRepetitionRenderScenarioTests` (2) — the empirical root-cause
+  measurement above: placement count in the several-hundred range, and the
+  resulting single-pass graph is `>40,000` chars / `>2,000` nodes while the
+  distinct-segment count never exceeds `clipCount + 1`.
+- `FFmpegRenderServiceTests` (6) — the concat path pre-renders each distinct
+  segment once then concats (Stage A/B invocation counts and argument
+  shape); the concat list has one line per placement in timeline order with
+  the expected reuse period; the working directory is deleted afterward; a
+  large low-repetition plan stays on the single-pass graph; a hardware
+  Stage A failure falls back to libx264 for all distinct segments while
+  Stage B stays a copy; progress is reported monotonically across both
+  stages.
+- `FFmpegRenderServiceIntegrationTests` (1, real ffmpeg) — the end-to-end
+  verification above.
+
+`SceneForge.Media.Tests` is now **524** (was 515). Full Debug solution
+**673/673**, 0 skipped. Format clean. Release: `SceneForge.Core`,
+`SceneForge.Media`, `SceneForge.Infrastructure`, `SceneForge.Accuracy` and
+their test projects all build and pass (609). The `SceneForge.App` Release
+relink is still blocked by the running app holding its output DLLs (the
+same environmental lock noted above); nothing in this fix touches
+`SceneForge.App`, and `SceneForge.App.Tests` passes in Debug (64).
+
+**Outstanding — resolved by the next fix below.** As first written, this
+fix left a large *low-repetition* plan (e.g. a 22-minute output cut from
+hundreds of distinct 4s clips) on the single-pass filter-graph path, where
+it hits the same filtergraph limits. That gap is closed by the batched
+strategy in "Post-acceptance fix (2026-08-27): large distinct-segment
+counts" below — the two piece-production strategies (distinct-dedup and
+batched) now share one concat-demuxer assembly and cover every
+total/distinct segment mix.
+
+## Post-acceptance fix (2026-08-27): large distinct-segment counts — the general batched strategy
+
+A third real-world render failure, a different shape again: a **new source
+video with plenty of clean footage**. `Cannot allocate memory`, but this
+time with **no repetition** — the 22-minute target is filled entirely by
+distinct trims, so the distinct-dedup fix above (keyed on repetition) does
+not engage and the render falls through to the single-pass graph.
+
+**Root cause — confirmed empirically.**
+`HighRepetitionRenderScenarioTests.PlentifulFootageLowRepetition_RoutesToBatchedStrategy_NotTheInfeasibleSinglePassGraph`
+plans a 420-clip / ~1680s pool (3–5s clips, the `CleanClipExtractor`
+default range) against the 22-minute target at production defaults:
+
+| Quantity | Value |
+|---|---|
+| Placements produced | **329** |
+| Distinct source ranges | **329** (max reuse of any clip: **1** — zero repetition) |
+| `filter_complex` graph length | **~69,700 characters** |
+| Approx. libavfilter nodes | **~2,300** |
+
+Same defect, different trigger: the single-pass graph's node count scales
+with **total** segment count, and segment count scales with output duration
+÷ average clip length (~15 segments/minute at 4s clips). Repetition was
+never the real variable — any target longer than ~10–13 minutes produces
+enough segments to overflow the graph, and a footage-rich source (no
+repetition) is the *more common* trigger.
+
+**Fix — one scalable pre-render pipeline, two ways to produce the pieces.**
+`FFmpegRenderService.SelectRenderStrategy` now returns one of three:
+
+- **`SinglePass`** — `plan.Segments.Count <= MaxSegmentsPerFilterGraph`
+  (60). The existing single filter_complex pass, unchanged, still the
+  default for normal-length edits.
+- **`DistinctDedup`** — past 60 segments *and* distinct ≤ 50% of total
+  *and* distinct ≤ `MaxDistinctDedupPieces` (400). Render each distinct
+  window once (the fix above). Optimal when a small set repeats.
+- **`Batched`** — everything else past 60 segments. Partition the
+  Position-ordered placement sequence into consecutive batches of ≤ 60,
+  render each batch with a **bounded** video-only filter_complex
+  (`RenderFilterGraphBuilder.BuildVideoConcat` — the same per-segment
+  chain, capped at 60 trims + one `concat` node), `-frames:v`-pinned to the
+  batch's summed frame-quantized length. The 329-segment plan → **6
+  batches**. The general guarantee: correct for an all-distinct plan, a
+  heavily-repeated one, or any mix.
+
+Both non-single-pass strategies feed the **same Stage B**: list the pieces
+in playback order (per placement for dedup, per batch for batched) for the
+concat demuxer, stream-copy the assembled video, mux the trimmed audio.
+Everything lives under one `%TEMP%\SceneForge\render-concat\<guid>\`
+directory (piece files, per-batch filter scripts when a batch graph still
+exceeds the inline char threshold, the list file), deleted in a `finally`
+block on every exit path. Hardware→libx264 fallback wraps the whole
+pre-render stage; Stage B is always `-c:v copy`.
+
+**Why this is a general fix, not a third point patch.** The bound is now
+structural: **no ffmpeg invocation ever carries a filter graph larger than
+`MaxSegmentsPerFilterGraph` segments**, regardless of how many total or
+distinct segments the plan has, and the concat demuxer that joins the
+pieces has no practical count limit. The plan always renders — satisfying
+CLAUDE.md rule 15 and the non-negotiable audio-duration guarantee — for any
+segment count and any repetition mix real footage produces.
+
+**On CLAUDE.md rule 7 (no full-video buffering).** The batched strategy's
+encoded intermediates sum to ≈ the output size on disk transiently (one
+temp dir, disk-space-checked up front, deleted in `finally`). That is the
+output written in bounded chunks, not a decoded-video buffer: the
+decoded-frame working set is one batch (≤ 60 segments) at a time, processed
+and discarded before the next — a bounded window, which is what rule 7
+asks for. Any multi-pass assembly writes its pieces to disk before the
+final join; the alternative (a single pass) is the infeasible graph this
+fix exists to avoid.
+
+**Verified end to end against real ffmpeg 9.0.1.**
+`FFmpegRenderServiceIntegrationTests.RenderAsync_LargeAllDistinctPlan_RealFfmpegRendersInBoundedBatchesAndConcats`
+drives 70 distinct windows (no repetition) → 2 batches → a verified 28s
+output whose duration matches the plan **exactly (delta 0)**, in **~4
+seconds**. The distinct-dedup integration test still passes unchanged
+(delta 0).
+
+**Tests (all green; `tools/ffmpeg` staged locally so none skip):**
+
+- `HighRepetitionRenderScenarioTests` — +1 (the 329-segment low-repetition
+  measurement; asserts it routes to `Batched`).
+- `FFmpegRenderServiceTests` — the large-plan test now asserts the `Batched`
+  path (`ceil(305/60) = 6` bounded batches, every segment accounted for
+  once, one concat pass); +1 for hardware-batch-failure → libx264 fallback
+  across all batches. The renamed
+  `RenderAsync_SinglePassGraphPastCharThreshold_UsesFilterComplexScriptFile_AndDeletesItAfterward`
+  now exercises the single-pass script-file branch at exactly
+  `MaxSegmentsPerFilterGraph`.
+- `FFmpegRenderServiceIntegrationTests` — +1 (the real-ffmpeg batched
+  verification above).
+- `RenderFilterGraphBuilder` gains `BuildVideoConcat` (video-only, any
+  segment subset); `Build` now delegates to it and no longer wraps a
+  single-segment plan in a pointless `concat=n=1`.
+
+`SceneForge.Media.Tests` is now **527** (was 524). Full Debug solution
+**676/676**, 0 skipped. Format clean. Release: `SceneForge.Core`,
+`SceneForge.Media`, `SceneForge.Infrastructure`, `SceneForge.Accuracy` +
+their test projects build and pass (`SceneForge.Media.Tests` 527/527 in
+Release too). The `SceneForge.App` Release relink remains blocked by the
+running app holding its DLLs (unchanged environmental lock); nothing in
+this fix touches `SceneForge.App`, and `SceneForge.App.Tests` passes in
+Debug (64).
+
+## Post-acceptance perf fix (2026-08-28): the batched render was 30-50 min because every batch re-decoded the whole source
+
+Manual end-to-end testing confirmed the batched strategy above finally
+renders the motivating scenario (231 clips / 22-minute audio) with no
+memory crash — but it took **30-50 minutes**, too slow to use.
+
+**Root cause — confirmed by measurement, not estimate.** Stage A rendered
+each `<= InitialBatchSegmentCount` batch with a single shared `-i <source>`
+input fanned out through the filtergraph's implicit `split` to one
+`trim=start=<absolute>` per segment. `trim` operates *after* decode and the
+command carried no input-level `-ss`, so ffmpeg decoded the source **from
+frame 0** every time. Because a Position-ordered batch's segments are
+scattered across the whole source (the planner shuffles), the latest trim
+window in each batch sits near the source end, so each batch decoded
+*almost the entire source*. For ~4 batches against a ~24-minute source that
+is ~4x a full-source decode before any encoding. Direct measurement on an
+8-minute 1080p source: one 2-second segment near the end took **32 s** with
+the shared-input decode vs **1 s** with an input seek — a **32x** gap that
+grows with source length and multiplies by batch count. Hardware-encoder
+detection was *not* the problem (verified: `h264_amf` was probed and used
+correctly on the test machine); the encode was already fast, the decode was
+the cost.
+
+**Fix — per-segment input seeking, batch sizing and retry logic untouched.**
+`BuildSegmentRunArguments` now emits one `-ss <SourceStart> -i <source>`
+input **per segment in the run** instead of one shared input, and
+`RenderFilterGraphBuilder.BuildSeekedVideoConcat` builds the batch graph so
+segment *k* reads from input *k* and trims from `0` (the seek already
+positioned it). ffmpeg now decodes ~one GOP into each segment. Everything
+that governs *when* and *how big* a batch is stays exactly as it was:
+`SelectRenderStrategy`, `InitialBatchSegmentCount` (60), the
+`DistinctDedup`/`Batched` split, and the recursive **halve-on-OOM** retry
+in `RenderSegmentRunAsync` (which now splits an N-seeked-input run into two
+smaller seeked-input runs, same as before). `-frames:v` still pins each
+batch's concatenated frame count to the sum of its segments'
+frame-quantized lengths, so the frame-exact duration guarantee is
+unchanged — the rendered frames are identical, only the path the decoder
+takes to reach them differs. At the 60-segment batch cap the extra `-ss
+<n> -i <path>` tokens add a few KB to the command line, well within the
+Win32 limit the `InlineFilterGraphCharacterThreshold` note already covers.
+
+**Also fixed: the software fallback was dead on the shipped ffmpeg.**
+SceneForge's vendored ffmpeg is built `--disable-libx264`, so
+`RunWithFallbackAsync`'s hardcoded `libx264` retry — and
+`HardwareEncoderProbe`'s hardcoded `libx264` last-resort candidate — could
+never actually run: a hardware-render failure would have thrown instead of
+falling back. `HardwareEncoderProbe` now also probes `libopenh264` (after
+`libx264`), exposes `SelectSoftwareEncoderAsync` for the retry to resolve
+the real software encoder name rather than assume one, and its smoke test
+uses a representative `320x240` clip with the real per-encoder quality args
+(a `64x64` bare probe is below NVENC's minimum dimensions and would
+false-negative a working NVENC). `EncoderQualityDefaults` (new) is the one
+place those args live, shared by the probe and the render. The selected
+encoder — and any fallback — is now written to `System.Diagnostics.Trace`
+(`[SceneForge.Render] encoder probe selected '<name>' (<hardware|software>)`).
+
+**Measured before/after (synthetic 8-minute 1080p30 source, AMD AMF
+hardware encode — `h264_amf` probed and selected, no fallback —
+`tools/ffmpeg` staged; each run alone on the box):**
+
+| Scenario | Before (shared `-i`, no seek) | After (`-ss` per segment) |
+|---|---|---|
+| ffmpeg-level Stage A — 120 scattered 1 s segments / 3 batches of 40 | **178 s** | **85 s** (2.1x) |
+| ffmpeg-level Stage A — 180 scattered 2.5 s segments / 3 batches of 60 | **521 s** (8.7 min) | ~130 s (part of the 150 s below) |
+| end-to-end `FFmpegRenderService.RenderAsync` — same 180-segment / 7:30-output plan, incl. probe + Stage B concat + verification | **> 521 s** (Stage A alone already 8.7 min) | **150 s** (2.5 min) |
+| isolation — one 2 s segment near the source end | **32 s** | **1 s** (32x) |
+
+End-to-end 180-segment run: **≥ 3.5x faster**, output verified with
+`DurationDelta = 00:00:00` / `DurationWithinTolerance = true`, per-piece
+bitrate identical to the shared-input form. The relative win grows with
+source length (decode cost scales with it; the seek cost does not) and with
+batch count, so the motivating 22-minute / ~24-minute-source case — 4-5
+batches, ~3x this source's decode cost — sees a larger multiple than the
+8-minute test does.
+
+Bounded parallelism across independent Stage A batches
+(`IAdaptiveResourceGovernor.MaxWorkers`) was investigated as a further
+speed-up but **deliberately deferred**: it requires restructuring the
+shared piece-index / `producedFiles` / `SplitEvents` accumulation that the
+recursive halving writes into, which is exactly the retry machinery this
+change was required to leave untouched. It is a clean follow-up once that
+accumulation is made per-batch.
+
+**Tests (all green; `tools/ffmpeg` staged locally so none skip):**
+
+- `FFmpegRenderServiceTests` — +6:
+  `RenderAsync_BatchedPlan_SeeksToEverySegmentSourceStart_NotASingleFullDecode`
+  (every batch carries one `-ss <start> -i <source>` per segment, in
+  Position order, each graph trim starting at 0),
+  `RenderAsync_DistinctDedupPlan_SeeksToEachDistinctWindowStart`,
+  `RenderAsync_BatchedPlan_StillPinsConcatenatedFrameCount_AfterSeekChange`
+  (Phase 16 `-frames:v` guarantee), `RenderAsync_LogsWhichEncoderTheProbeSelected`
+  (`[Theory]`, hardware + software), `RenderAsync_HardwareRenderFails_LogsTheSoftwareEncoderItRetriesWith`.
+- `HardwareEncoderProbeTests` — +4: representative smoke-test resolution +
+  real quality args; `SelectSoftwareEncoderAsync` skips hardware candidates
+  and returns the first working software encoder; throws when none work; is
+  cached separately from `SelectEncoderAsync`.
+- `FFmpegRenderServiceIntegrationTests` — the two real-ffmpeg batched/dedup
+  tests (`RenderAsync_LargeAllDistinctPlan_...`, `RenderAsync_HighRepetitionPlan_...`)
+  pass unchanged with `DurationDelta = 0`, exercising the new seeked
+  command against real ffmpeg.
+
+`SceneForge.Media.Tests` is now **537** (was 527). Full Debug **686/686**,
+Release **686/686**, 0 skipped. Format clean.
+
 ## Repository layout produced
 
 ```
