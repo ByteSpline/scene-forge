@@ -19,9 +19,11 @@ packager has explicitly placed it here.
 
 `SceneForge.Media.Tooling.FfmpegToolLocator` looks for `ffmpeg.exe` and
 `ffprobe.exe` under `tools\ffmpeg\` next to the installed/portable exe, and
-never on `PATH`. `Publish-SceneForge.ps1` copies **everything** in this
-folder (not just the two .exe files) into that location, because a shared
-FFmpeg build's `ffmpeg.exe`/`ffprobe.exe` depend on sibling DLLs
+never on `PATH`. `Publish-SceneForge.ps1` copies **every non-dotfile** in
+this folder (not just the two .exe files; `.gitkeep` and any other dotfile
+is skipped so it never rides into the shipped package) into that location,
+because a shared FFmpeg build's `ffmpeg.exe`/`ffprobe.exe` depend on sibling
+DLLs
 (`avcodec-*.dll`, `avformat-*.dll`, `avutil-*.dll`, `swresample-*.dll`,
 `swscale-*.dll`, and `avfilter-*.dll`/`avdevice-*.dll` if present) that
 must sit in the same directory to load (Windows' default DLL search order

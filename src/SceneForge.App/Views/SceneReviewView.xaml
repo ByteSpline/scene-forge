@@ -14,7 +14,7 @@
             <Grid Margin="0,4">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="150" />
-                    <ColumnDefinition Width="220" />
+                    <ColumnDefinition Width="250" />
                     <ColumnDefinition Width="200" />
                     <ColumnDefinition Width="130" />
                     <ColumnDefinition Width="100" />
@@ -45,12 +45,12 @@
                         <Run Text="{Binding Clip.Range.End, Converter={StaticResource TimeSpanToClockStringConverter}, Mode=OneWay}" />
                     </TextBlock>
                     <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
-                        <TextBlock Text="Start" Style="{StaticResource Caption}" VerticalAlignment="Center" Margin="0,0,4,0" />
-                        <TextBox Width="70"
+                        <TextBlock Text="Start" Style="{StaticResource Caption}" VerticalAlignment="Center" Margin="0,0,6,0" />
+                        <TextBox Width="82"
                                  Text="{Binding AdjustedStart, Converter={StaticResource EditableTimeSpanConverter}, UpdateSourceTrigger=LostFocus}"
                                  AutomationProperties.Name="Adjusted clip start" />
-                        <TextBlock Text="End" Style="{StaticResource Caption}" VerticalAlignment="Center" Margin="8,0,4,0" />
-                        <TextBox Width="70"
+                        <TextBlock Text="End" Style="{StaticResource Caption}" VerticalAlignment="Center" Margin="10,0,6,0" />
+                        <TextBox Width="82"
                                  Text="{Binding AdjustedEnd, Converter={StaticResource EditableTimeSpanConverter}, UpdateSourceTrigger=LostFocus}"
                                  AutomationProperties.Name="Adjusted clip end" />
                     </StackPanel>
@@ -108,7 +108,7 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <StackPanel Grid.Row="0" Margin="0,0,0,12">
+        <StackPanel Grid.Row="0" Margin="0,0,0,16">
             <TextBlock Text="Review candidate clips" Style="{StaticResource Heading1}" />
             <TextBlock Text="{Binding ErrorMessage}"
                        Style="{StaticResource ErrorText}"
@@ -133,7 +133,7 @@
                 Content="Continue"
                 Command="{Binding ContinueCommand}"
                 HorizontalAlignment="Right"
-                Margin="0,12,0,0"
+                Margin="0,16,0,0"
                 AutomationProperties.Name="Continue to timeline summary" />
     </Grid>
 </UserControl>

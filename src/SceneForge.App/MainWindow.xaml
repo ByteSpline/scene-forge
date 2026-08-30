@@ -6,68 +6,158 @@
         mc:Ignorable="d"
         Title="SceneForge"
         Height="820" Width="1280"
-        MinHeight="600" MinWidth="960"
-        WindowStartupLocation="CenterScreen"
+        MinHeight="560" MinWidth="900"
+        WindowStyle="None"
+        ResizeMode="CanResize"
+        WindowStartupLocation="Manual"
         Background="{DynamicResource Brush.WindowBackground}"
+        TextOptions.TextFormattingMode="Ideal"
+        FontFamily="{DynamicResource Font.Primary}"
+        FontSize="{DynamicResource FontSize.Body}"
         KeyboardNavigation.TabNavigation="Cycle">
 
-    <DockPanel LastChildFill="True">
+    <!-- GlassFrameThickness="1" is deliberate, NOT 0: it tells DWM to keep
+         rendering the standard window drop-shadow and 1px system frame line
+         around this otherwise-chromeless (WindowStyle="None") window, so it
+         reads as a distinct, bounded window and doesn't visually blend into
+         whatever is behind it. ResizeBorderThickness still gives the custom
+         8-edge resize grips; UseAeroCaptionButtons="False" so our own
+         caption buttons are the only ones. -->
+    <WindowChrome.WindowChrome>
+        <WindowChrome CaptionHeight="40"
+                      ResizeBorderThickness="6"
+                      CornerRadius="0"
+                      GlassFrameThickness="1"
+                      UseAeroCaptionButtons="False" />
+    </WindowChrome.WindowChrome>
 
-        <!-- Step indicator + back navigation. AutomationProperties.LiveSetting
-             lets a screen reader announce step changes without the user
-             needing to re-locate focus. -->
-        <Border DockPanel.Dock="Top"
-                Background="{DynamicResource Brush.PanelBackground}"
-                BorderBrush="{DynamicResource Brush.PanelBorder}"
-                BorderThickness="0,0,0,1"
-                Padding="16,10">
-            <Grid>
+    <!-- Explicit 1px inner edge in a mid-tone border colour, on top of the
+         DWM system frame above, so the window boundary is unambiguous in
+         both themes. Padding is toggled to 8 while maximized by
+         MainWindow.xaml.cs (WindowChrome insets the client area by the
+         resize border in that state). -->
+    <Border x:Name="WindowRootBorder"
+            Background="{DynamicResource Brush.WindowBackground}"
+            BorderBrush="{DynamicResource Brush.WindowBorder}"
+            BorderThickness="1">
+        <DockPanel LastChildFill="True">
+
+            <!-- Custom title bar. The row itself is the draggable caption
+                 (WindowChrome.CaptionHeight); the caption buttons opt back
+                 into hit-testing via the TitleBarButton style. -->
+            <Grid x:Name="TitleBar"
+                  DockPanel.Dock="Top"
+                  Height="40"
+                  Background="{DynamicResource Brush.TitleBarBackground}">
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
 
-                <Button Grid.Column="0"
-                        Style="{StaticResource SecondaryButton}"
-                        Content="← Back"
-                        Command="{Binding GoBackCommand}"
-                        Visibility="{Binding IsBackAllowed, Converter={StaticResource NullToVisibilityConverter}}"
-                        AutomationProperties.Name="Go back to the previous step"
-                        Margin="0,0,16,0" />
+                <StackPanel Grid.Column="0"
+                            Orientation="Horizontal"
+                            VerticalAlignment="Center"
+                            Margin="14,0,0,0">
+                    <Border Width="14" Height="14"
+                            CornerRadius="4"
+                            Background="{DynamicResource Brush.Accent}"
+                            VerticalAlignment="Center" />
+                    <TextBlock Text="SceneForge"
+                               Margin="10,0,0,0"
+                               VerticalAlignment="Center"
+                               FontSize="{DynamicResource FontSize.Caption}"
+                               FontWeight="SemiBold"
+                               Foreground="{DynamicResource Brush.TitleBarForeground}" />
+                </StackPanel>
 
-                <TextBlock Grid.Column="1"
-                           Text="{Binding CurrentStep, Converter={StaticResource WorkflowStepToDisplayConverter}}"
-                           Style="{StaticResource Heading2}"
-                           Margin="0"
-                           VerticalAlignment="Center"
-                           AutomationProperties.LiveSetting="Polite" />
+                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                    <Button Style="{StaticResource TitleBarButton}"
+                            Command="{Binding MinimizeCommand}"
+                            AutomationProperties.Name="Minimize window">
+                        <Path Style="{StaticResource TitleBarGlyph}"
+                              Width="10" Height="10"
+                              Data="M0,9 H10" />
+                    </Button>
+                    <Button Style="{StaticResource TitleBarButton}"
+                            Command="{Binding ToggleMaximizeCommand}"
+                            AutomationProperties.Name="{Binding MaximizeRestoreLabel}">
+                        <Grid>
+                            <Path Style="{StaticResource TitleBarGlyph}"
+                                  Width="10" Height="10"
+                                  Data="M0.5,0.5 H9.5 V9.5 H0.5 Z"
+                                  Visibility="{Binding IsMaximized, Converter={StaticResource NullToVisibilityConverter}, ConverterParameter=Invert}" />
+                            <Path Style="{StaticResource TitleBarGlyph}"
+                                  Width="10" Height="10"
+                                  Data="M2.5,2.5 H9.5 V9.5 H2.5 Z M2.5,2.5 V0.5 H7.5 V2.5 M9.5,7.5 H7.5"
+                                  Visibility="{Binding IsMaximized, Converter={StaticResource NullToVisibilityConverter}}" />
+                        </Grid>
+                    </Button>
+                    <Button Style="{StaticResource TitleBarCloseButton}"
+                            Command="{Binding CloseCommand}"
+                            AutomationProperties.Name="Close window">
+                        <Path Style="{StaticResource TitleBarGlyph}"
+                              Width="10" Height="10"
+                              Data="M0,0 L10,10 M0,10 L10,0" />
+                    </Button>
+                </StackPanel>
             </Grid>
-        </Border>
 
-        <!-- No-network reassurance, always visible (CLAUDE.md rule 2). -->
-        <Border DockPanel.Dock="Bottom"
-                Background="{DynamicResource Brush.PanelBackground}"
-                BorderBrush="{DynamicResource Brush.PanelBorder}"
-                BorderThickness="0,1,0,0"
-                Padding="16,8">
-            <TextBlock Text="SceneForge runs entirely on this computer. No internet connection is used or required."
-                       Style="{StaticResource Caption}"
-                       HorizontalAlignment="Center" />
-        </Border>
+            <!-- Step indicator + back navigation. AutomationProperties.LiveSetting
+                 lets a screen reader announce step changes without the user
+                 needing to re-locate focus. -->
+            <Border DockPanel.Dock="Top"
+                    Background="{DynamicResource Brush.PanelBackground}"
+                    BorderBrush="{DynamicResource Brush.PanelBorder}"
+                    BorderThickness="0,1,0,1"
+                    Padding="24,14">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
 
-        <!-- Deliberately no ScrollViewer here: Scene Review's clip list
-             relies on its own bounded-height ScrollViewer/virtualizing
-             ListView to keep virtualization working (a virtualizing panel
-             given effectively infinite height by an ancestor ScrollViewer
-             would realize every row up front, defeating CLAUDE.md rule
-             6/7). Every other View wraps its own content in a ScrollViewer
-             where it might overflow. -->
-        <ContentControl x:Name="ContentHost"
-                         Content="{Binding CurrentViewModel}"
-                         Focusable="False"
-                         Margin="24"
-                         HorizontalContentAlignment="Stretch"
-                         VerticalContentAlignment="Stretch" />
+                    <Button Grid.Column="0"
+                            Style="{StaticResource SecondaryButton}"
+                            Content="&#x2190;  Back"
+                            Command="{Binding GoBackCommand}"
+                            Visibility="{Binding IsBackAllowed, Converter={StaticResource NullToVisibilityConverter}}"
+                            AutomationProperties.Name="Go back to the previous step"
+                            Margin="0,0,16,0" />
 
-    </DockPanel>
+                    <TextBlock Grid.Column="1"
+                               Text="{Binding CurrentStep, Converter={StaticResource WorkflowStepToDisplayConverter}}"
+                               Style="{StaticResource Heading2}"
+                               Margin="0"
+                               VerticalAlignment="Center"
+                               AutomationProperties.LiveSetting="Polite" />
+                </Grid>
+            </Border>
+
+            <!-- No-network reassurance, always visible (CLAUDE.md rule 2). -->
+            <Border DockPanel.Dock="Bottom"
+                    Background="{DynamicResource Brush.PanelBackground}"
+                    BorderBrush="{DynamicResource Brush.PanelBorder}"
+                    BorderThickness="0,1,0,0"
+                    Padding="24,10">
+                <TextBlock Text="SceneForge runs entirely on this computer. No internet connection is used or required."
+                           Style="{StaticResource Caption}"
+                           HorizontalAlignment="Center" />
+            </Border>
+
+            <!-- Deliberately no ScrollViewer here: Scene Review's clip list
+                 relies on its own bounded-height ScrollViewer/virtualizing
+                 ListView to keep virtualization working (a virtualizing panel
+                 given effectively infinite height by an ancestor ScrollViewer
+                 would realize every row up front, defeating CLAUDE.md rule
+                 6/7). Every other View wraps its own content in a ScrollViewer
+                 where it might overflow. -->
+            <ContentControl x:Name="ContentHost"
+                             Content="{Binding CurrentViewModel}"
+                             Focusable="False"
+                             Margin="28,24"
+                             HorizontalContentAlignment="Stretch"
+                             VerticalContentAlignment="Stretch" />
+
+        </DockPanel>
+    </Border>
 </Window>

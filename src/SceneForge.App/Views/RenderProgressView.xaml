@@ -19,17 +19,17 @@
 
                 <ProgressBar Minimum="0" Maximum="100"
                              Value="{Binding ProgressPercent, Mode=OneWay}"
-                             Height="16"
-                             Margin="0,4,0,12" />
+                             Height="12"
+                             Margin="0,8,0,16" />
 
-                <UniformGrid Columns="2" Margin="0,0,0,16">
+                <UniformGrid Columns="2" Margin="0,0,0,20">
                     <StackPanel Margin="0,0,16,0">
                         <TextBlock Text="Estimated time remaining" Style="{StaticResource Caption}" />
-                        <TextBlock Text="{Binding EstimatedTimeRemaining, Converter={StaticResource TimeSpanToClockStringConverter}, TargetNullValue='Calculating...'}" FontSize="18" />
+                        <TextBlock Text="{Binding EstimatedTimeRemaining, Converter={StaticResource TimeSpanToClockStringConverter}, TargetNullValue='Calculating...'}" Style="{StaticResource MetricValue}" />
                     </StackPanel>
                     <StackPanel>
                         <TextBlock Text="Encoding speed" Style="{StaticResource Caption}" />
-                        <TextBlock FontSize="18">
+                        <TextBlock Style="{StaticResource MetricValue}">
                             <Run Text="{Binding SpeedMultiplier, StringFormat={}{0:0.0}, TargetNullValue='—', Mode=OneWay}" />
                             <Run Text="x realtime" />
                         </TextBlock>

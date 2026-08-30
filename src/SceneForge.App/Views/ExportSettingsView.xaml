@@ -11,7 +11,7 @@
     <StackPanel>
         <TextBlock Text="Export settings" Style="{StaticResource Heading1}" />
 
-        <Border Style="{StaticResource Card}" Margin="0,0,0,16">
+        <Border Style="{StaticResource CardSection}">
             <StackPanel>
                 <TextBlock Text="Output resolution" Style="{StaticResource Heading2}" />
                 <ComboBox ItemsSource="{Binding AvailableResolutions}"
@@ -42,7 +42,7 @@
             </StackPanel>
         </Border>
 
-        <Border Style="{StaticResource Card}" Margin="0,0,0,16">
+        <Border Style="{StaticResource Card}">
             <StackPanel>
                 <TextBlock Text="Output file" Style="{StaticResource Heading2}" />
                 <TextBlock Text="{Binding OutputVideoPath, TargetNullValue='No output file chosen yet.'}"
@@ -64,6 +64,7 @@
         <Button Content="Start render"
                 Command="{Binding ContinueCommand}"
                 HorizontalAlignment="Right"
+                Margin="{StaticResource Space.ActionBarTop}"
                 AutomationProperties.Name="Start render" />
     </StackPanel>
     </ScrollViewer>
