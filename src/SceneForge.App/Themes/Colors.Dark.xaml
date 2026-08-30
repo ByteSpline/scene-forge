@@ -4,23 +4,61 @@
     <!-- Dark palette - same semantic key set as Colors.Light.xaml, chosen so
          no color pair reduces to pure black/white (avoids crushed contrast
          on real displays) and every text/background pairing keeps
-         comfortable contrast for readability. -->
-    <SolidColorBrush x:Key="Brush.WindowBackground" Color="#1E1F22" />
-    <SolidColorBrush x:Key="Brush.PanelBackground" Color="#2B2D31" />
-    <SolidColorBrush x:Key="Brush.PanelBorder" Color="#3F4147" />
-    <SolidColorBrush x:Key="Brush.TextPrimary" Color="#F0F0F0" />
-    <SolidColorBrush x:Key="Brush.TextSecondary" Color="#B4B7BD" />
-    <SolidColorBrush x:Key="Brush.Accent" Color="#5AA6FF" />
-    <SolidColorBrush x:Key="Brush.AccentHover" Color="#7FBBFF" />
-    <SolidColorBrush x:Key="Brush.AccentText" Color="#0B1522" />
+         comfortable contrast for readability.
+
+         Phase 17 (UI polish): the accent is a soft sky blue (#5C9CFF) rather
+         than the previous harder #5AA6FF, paired with a near-black
+         AccentText (#08182E) so filled accent buttons keep a 6.2:1 contrast
+         ratio. Body text on panels stays above WCAG AA (4.5:1). -->
+
+    <!-- Surfaces -->
+    <SolidColorBrush x:Key="Brush.WindowBackground" Color="#1B1D22" />
+    <SolidColorBrush x:Key="Brush.PanelBackground" Color="#25272E" />
+    <SolidColorBrush x:Key="Brush.SurfaceAlt" Color="#2E313A" />
+    <SolidColorBrush x:Key="Brush.PanelBorder" Color="#3A3D46" />
+    <!-- Outer window edge - lighter than PanelBorder so the window boundary
+         is unmistakable against a dark desktop / other windows. -->
+    <SolidColorBrush x:Key="Brush.WindowBorder" Color="#575C68" />
+
+    <!-- Text -->
+    <SolidColorBrush x:Key="Brush.TextPrimary" Color="#ECEDEF" />
+    <SolidColorBrush x:Key="Brush.TextSecondary" Color="#AAB0BA" />
+    <SolidColorBrush x:Key="Brush.TextDisabled" Color="#767B85" />
+
+    <!-- Accent (focus rings, progress bars, links, checkbox fill, ...) -->
+    <SolidColorBrush x:Key="Brush.Accent" Color="#5C9CFF" />
+    <SolidColorBrush x:Key="Brush.AccentHover" Color="#7DB2FF" />
+    <SolidColorBrush x:Key="Brush.AccentPressed" Color="#4A88EC" />
+    <SolidColorBrush x:Key="Brush.AccentText" Color="#08182E" />
+    <SolidColorBrush x:Key="Brush.AccentSubtle" Color="#273A57" />
+
+    <!-- Primary call-to-action button - identical to the light theme (a CTA
+         button is not a theme-inverting surface). White label on #2F6FE0 is
+         4.70:1 (WCAG AA for normal text is 4.5:1). -->
+    <SolidColorBrush x:Key="Brush.ButtonPrimaryBackground" Color="#2F6FE0" />
+    <SolidColorBrush x:Key="Brush.ButtonPrimaryHover" Color="#2461D6" />
+    <SolidColorBrush x:Key="Brush.ButtonPrimaryPressed" Color="#1B52BE" />
+    <SolidColorBrush x:Key="Brush.ButtonPrimaryText" Color="#FFFFFF" />
+
+    <!-- Status -->
     <SolidColorBrush x:Key="Brush.Success" Color="#5FCE7C" />
     <SolidColorBrush x:Key="Brush.Warning" Color="#E3B341" />
     <SolidColorBrush x:Key="Brush.Error" Color="#F2735C" />
-    <SolidColorBrush x:Key="Brush.Disabled" Color="#6B6E76" />
-    <SolidColorBrush x:Key="Brush.InputBackground" Color="#26282C" />
-    <SolidColorBrush x:Key="Brush.InputBorder" Color="#565961" />
-    <SolidColorBrush x:Key="Brush.HoverBackground" Color="#33363C" />
+
+    <!-- Controls -->
+    <SolidColorBrush x:Key="Brush.Disabled" Color="#4B4F59" />
+    <SolidColorBrush x:Key="Brush.InputBackground" Color="#1F2127" />
+    <SolidColorBrush x:Key="Brush.InputBorder" Color="#4A4E58" />
+    <SolidColorBrush x:Key="Brush.InputBorderFocused" Color="#5C9CFF" />
+    <SolidColorBrush x:Key="Brush.HoverBackground" Color="#2F323B" />
     <SolidColorBrush x:Key="Brush.SelectedBackground" Color="#2E4A6E" />
-    <SolidColorBrush x:Key="Brush.FocusVisual" Color="#5AA6FF" />
+    <SolidColorBrush x:Key="Brush.FocusVisual" Color="#5C9CFF" />
+
+    <!-- Window chrome / custom title bar -->
+    <SolidColorBrush x:Key="Brush.TitleBarBackground" Color="#202329" />
+    <SolidColorBrush x:Key="Brush.TitleBarForeground" Color="#ECEDEF" />
+    <SolidColorBrush x:Key="Brush.TitleBarButtonHover" Color="#343841" />
+    <SolidColorBrush x:Key="Brush.CloseButtonHover" Color="#C42B1C" />
+    <SolidColorBrush x:Key="Brush.CloseButtonHoverText" Color="#FFFFFF" />
 
 </ResourceDictionary>

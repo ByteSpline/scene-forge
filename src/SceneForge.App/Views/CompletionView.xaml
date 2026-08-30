@@ -11,7 +11,7 @@
     <StackPanel>
         <TextBlock Text="Render complete" Style="{StaticResource Heading1}" />
 
-        <Border Style="{StaticResource Card}" Margin="0,0,0,16">
+        <Border Style="{StaticResource CardSection}">
             <StackPanel>
                 <TextBlock Text="{Binding OutputFilePath}" TextWrapping="Wrap" Margin="0,0,0,8" />
                 <TextBlock>
@@ -30,7 +30,7 @@
             </StackPanel>
         </Border>
 
-        <Border Style="{StaticResource Card}" Margin="0,0,0,16">
+        <Border Style="{StaticResource Card}">
             <StackPanel>
                 <TextBlock Text="Output verification" Style="{StaticResource Heading2}" />
                 <TextBlock Text="Every check passed: expected video/audio streams present, duration within tolerance, first/middle/last frames decodable."
@@ -48,7 +48,7 @@
             </StackPanel>
         </Border>
 
-        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="{StaticResource Space.ActionBarTop}">
             <Button Content="Open output folder"
                     Style="{StaticResource SecondaryButton}"
                     Command="{Binding OpenOutputFolderCommand}"

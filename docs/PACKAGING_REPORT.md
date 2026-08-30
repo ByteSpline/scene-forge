@@ -14,6 +14,104 @@ needs before anything leaves this repository. See
 [docs/ARCHITECTURE_DECISIONS.md](ARCHITECTURE_DECISIONS.md), Decision 9,
 for the one-paragraph summary; this document is the detailed record.
 
+## Addendum 2026-08-29 — package contents audit (runtime-only, no source / no symbols)
+
+A fresh portable ZIP was built and extracted to confirm the packaged output
+contains **only** files the app needs to run — no source, project, or
+development files.
+
+**How the scripts package**: both `New-PortableZip.ps1` and
+`packaging/installer/SceneForge.iss` operate **only** on the
+`dotnet publish` output directory
+(`src/SceneForge.App/bin/publish/win-x64/`). Neither ever touches the source
+tree, `.git/`, `obj/`, or any other part of the repo — the ZIP is
+`Compress-Archive -Path "<publishdir>\*"` and the installer is
+`Source: "{#SourceDir}\*"`. So "is the package clean" reduces to "is the
+publish directory clean".
+
+**Two non-runtime files were found and fixed:**
+
+| File | Cause | Fix |
+|---|---|---|
+| `tools\ffmpeg\.gitkeep` | `Publish-SceneForge.ps1` copied *every* file from `packaging/vendor/ffmpeg/`, including the git placeholder that keeps that (otherwise git-ignored) folder tracked | The ffmpeg staging copy now skips dotfiles (`Where-Object { $_.Name -notlike '.*' }`) |
+| `*.pdb` × 4 (`SceneForge.App/.Core/.Media/.Infrastructure.pdb`, 230 KB total) | `dotnet publish` emits the app's portable PDB and copies each referenced project's PDB as a "reference-related file" | `Publish-SceneForge.ps1` now strips `*.pdb` from the publish output after publishing (see "Debug symbols" below) |
+
+**Debug symbols — decision: not shipped.** The portable ZIP and installer
+are end-user distributables; PDBs are not required at runtime. This repo
+builds deterministically (`Directory.Build.props`:
+`<Deterministic>true</Deterministic>`), so exact-commit symbols for any
+released build can be regenerated from source if a crash report ever needs
+file/line resolution. The app's own diagnostics channel — the rolling
+file logger and the `DispatcherUnhandledException` handler — still produces
+exception type, message, and method-level stack frames without PDBs. The
+strip happens in `Publish-SceneForge.ps1`, **not** in a `.csproj`, so
+`dotnet build` / `dotnet test` / F5 keep their symbols.
+
+**Defensive gates added** (so a package is never cut from a dirty
+directory produced some other way):
+
+- `New-PortableZip.ps1` now enumerates the publish directory before
+  zipping and **throws** if it finds any `.cs` / `.csproj` / `.sln` /
+  `.pdb` / `.user` / `.pubxml` / `.vbproj` / `.fsproj` or a
+  `.gitkeep` / `.gitignore` / `.gitattributes` / `.editorconfig`.
+- `SceneForge.iss` `[Files]` gained an `Excludes:` clause for the same
+  patterns.
+
+### Before → after (complete portable-ZIP contents)
+
+**Before** (19 entries — the two problems in **bold**):
+
+```
+        SceneForge.App.exe                       68,552,242
+        D3DCompiler_47_cor3.dll                   4,741,488
+        PenImc_cor3.dll                             157,992
+        PresentationNative_cor3.dll              1,235,280
+        vcruntime140_cor3.dll                       124,544
+        wpfgfx_cor3.dll                           1,955,664
+        SceneForge.App.pdb                          102,988   <-- removed
+        SceneForge.Core.pdb                          12,420   <-- removed
+        SceneForge.Infrastructure.pdb               21,240   <-- removed
+        SceneForge.Media.pdb                         93,424   <-- removed
+        tools\ffmpeg\.gitkeep                             0   <-- removed
+        tools\ffmpeg\ffmpeg.exe                     538,112
+        tools\ffmpeg\ffprobe.exe                    227,328
+        tools\ffmpeg\avcodec-63.dll             71,069,184
+        tools\ffmpeg\avdevice-63.dll             3,923,968
+        tools\ffmpeg\avfilter-12.dll            30,014,976
+        tools\ffmpeg\avformat-63.dll            22,153,728
+        tools\ffmpeg\avutil-61.dll               2,939,392
+        tools\ffmpeg\swresample-7.dll              722,944
+        tools\ffmpeg\swscale-10.dll              2,479,616
+        tools\opencv\OpenCvSharpExtern.dll      68,575,744
+        tools\opencv\opencv_videoio_ffmpeg4130_64.dll  28,578,304
+```
+
+**After** (17 entries, all runtime; `.pdb` / dotfile scan: CLEAN):
+
+```
+        SceneForge.App.exe                       68,552,242   self-contained single-file WPF app (icon + .deps.json + .runtimeconfig.json embedded)
+        D3DCompiler_47_cor3.dll                   4,741,488   \
+        PenImc_cor3.dll                             157,992    | loose native libs required by self-contained WPF
+        PresentationNative_cor3.dll              1,235,280    | (IncludeNativeLibrariesForSelfExtract=false, by
+        vcruntime140_cor3.dll                       124,544    | design - see win-x64-Release.pubxml)
+        wpfgfx_cor3.dll                           1,955,664   /
+        tools\ffmpeg\ffmpeg.exe                     538,112   \
+        tools\ffmpeg\ffprobe.exe                    227,328    | LGPL shared FFmpeg build, staged by
+        tools\ffmpeg\avcodec-63.dll             71,069,184    | Publish-SceneForge.ps1 from packaging/vendor/ffmpeg/
+        tools\ffmpeg\avdevice-63.dll             3,923,968    | (FfmpegToolLocator looks here, never PATH)
+        tools\ffmpeg\avfilter-12.dll            30,014,976    |
+        tools\ffmpeg\avformat-63.dll            22,153,728    |
+        tools\ffmpeg\avutil-61.dll               2,939,392    |
+        tools\ffmpeg\swresample-7.dll              722,944    |
+        tools\ffmpeg\swscale-10.dll              2,479,616   /
+        tools\opencv\OpenCvSharpExtern.dll      68,575,744   OpenCvSharp native lib, relocated here by the
+        tools\opencv\opencv_videoio_ffmpeg4130_64.dll  28,578,304   RelocateOpenCvNativeAssetForPackaging MSBuild target
+```
+
+17 files, ~294 MB uncompressed / 154 MB zipped. `Verify-PortableBuild.ps1
+-ZipPath ...` still reports **PASS** (extracted to an isolated folder,
+launched with PATH cleared, all three native-component diagnostics green).
+
 ## What changed
 
 ```

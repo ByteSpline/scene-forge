@@ -77,7 +77,10 @@ Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription
 ; alongside the exe - exactly the layout FfmpegToolLocator and
 ; OpenCvNativeLibraryResolver expect relative to the installed exe (never
 ; PATH - see those classes' remarks).
-Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+; Excludes: Publish-SceneForge.ps1 already produces a runtime-only directory
+; (it strips .pdb and never stages dotfiles); this is a defensive gate so a
+; stray source/project/debug/dev file in the publish dir is never installed.
+Source: "{#SourceDir}\*"; DestDir: "{app}"; Excludes: "*.pdb,*.cs,*.csproj,*.sln,*.user,*.pubxml,.gitkeep,.gitignore,.gitattributes,.editorconfig"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 #ifexist VcRedistPath
 Source: "{#VcRedistPath}"; DestDir: "{tmp}"; Flags: deleteafterinstall

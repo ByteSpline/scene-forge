@@ -59,6 +59,21 @@ if (-not (Test-Path $exePath)) {
     throw "Publish did not produce '$exePath' - check the dotnet publish output above."
 }
 
+# The portable ZIP and the installer both package this directory verbatim,
+# so it must contain only what the app needs at runtime. `dotnet publish`
+# emits a .pdb next to the exe (and copies each referenced project's .pdb as
+# a "reference-related file"); debug symbols are not runtime-required for a
+# distributed build and this repo builds deterministically
+# (Directory.Build.props: <Deterministic>true</Deterministic>), so exact-
+# commit symbols can be regenerated from source if a crash ever needs them.
+# Strip them here rather than in a .csproj so `dotnet build`/`dotnet test`/F5
+# keep their symbols untouched. See docs/PACKAGING_REPORT.md, "Debug symbols".
+$pdbFiles = Get-ChildItem -Path $publishDir -Recurse -File -Filter *.pdb
+if ($pdbFiles) {
+    $pdbFiles | Remove-Item -Force
+    Write-Host "Removed $($pdbFiles.Count) .pdb symbol file(s) from the publish output." -ForegroundColor Green
+}
+
 $openCvDll = Join-Path $publishDir "tools\opencv\OpenCvSharpExtern.dll"
 if (-not (Test-Path $openCvDll)) {
     throw "'$openCvDll' is missing - the RelocateOpenCvNativeAssetForPackaging MSBuild target should have created it. See SceneForge.App.csproj."
@@ -82,7 +97,13 @@ if ($SkipFfmpegStaging) {
     New-Item -ItemType Directory -Force -Path $toolsFfmpegDir | Out-Null
 
     Write-Host "==> Staging ffmpeg from '$VendorFfmpegDir' into tools\ffmpeg\" -ForegroundColor Cyan
-    Get-ChildItem -Path $VendorFfmpegDir -File | Copy-Item -Destination $toolsFfmpegDir -Force
+    # Copy everything a shared FFmpeg build needs (the .exe pair plus their
+    # sibling av*/sw* DLLs, and any license .txt) - but never the dotfiles
+    # git uses to keep this otherwise-gitignored folder tracked (.gitkeep),
+    # which would otherwise ride along into the shipped package.
+    Get-ChildItem -Path $VendorFfmpegDir -File |
+        Where-Object { $_.Name -notlike '.*' } |
+        Copy-Item -Destination $toolsFfmpegDir -Force
 
     Write-Host "ffmpeg staged: $((Get-ChildItem $toolsFfmpegDir -File).Count) file(s)." -ForegroundColor Green
 }

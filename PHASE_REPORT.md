@@ -839,3 +839,121 @@ build/test suite (663/663 in both Debug and Release) and by re-measuring the
 same worst-case scenario to confirm the UI thread is no longer the one
 paying that cost. `docs/PHASE_16_REPORT.md` is updated alongside this review
 to reflect the fix and the corrected test counts.
+
+## Phase 17 review — 2026-08-29
+
+Date: 2026-08-29
+
+### Scope
+
+Strict release review of branch `17-ui-polish` (working tree; no commits
+yet, `HEAD` at `30a9b56`) against [CLAUDE.md](CLAUDE.md),
+[docs/ARCHITECTURE_DECISIONS.md](docs/ARCHITECTURE_DECISIONS.md) Decisions
+1-2 and 5, and the phase's own [docs/UI_POLISH_REPORT.md](docs/UI_POLISH_REPORT.md)
+plus the packaging addendum in [docs/PACKAGING_REPORT.md](docs/PACKAGING_REPORT.md).
+Phase scope: purely visual/UX polish of the WPF shell + 8 screens (custom
+`WindowChrome` title bar, softer accent palette, type scale, spacing
+tokens, retemplated controls), a follow-up round fixing a real
+title-bar-clipped-off-screen regression plus capsule / lighter-blue
+buttons, and a packaging-contents audit. The reports were treated as claims
+to verify: the actual diff, tests, build, a real run of the built exe, and
+the packaging pipeline were inspected and re-run independently.
+
+### Commands executed and results
+
+```text
+git diff --stat                                     -> 18 files, +1049/-156; 8 new untracked
+                                                       (all under src/SceneForge.App, tests/, packaging/, docs/)
+dotnet build SceneForge.sln -c Release               -> Build succeeded, 0 Warning(s), 0 Error(s)
+dotnet build SceneForge.sln -c Debug                 -> Build succeeded, 0 Warning(s), 0 Error(s)
+dotnet test  SceneForge.sln -c Release --no-build     -> 699/699 passed, 0 skipped
+                                                       (Core 8, Accuracy 31, Infrastructure 46, App 77, Media 537)
+dotnet format SceneForge.sln --verify-no-changes      -> clean, no diff
+dotnet build benchmarks\SceneForge.Benchmarks         -> Build succeeded (no benchmark relevant - see below)
+packaging\scripts\Publish-SceneForge.ps1             -> "Removed 4 .pdb symbol file(s)", "ffmpeg staged: 9 file(s)",
+                                                       65.4 MB single-file exe
+packaging\scripts\New-PortableZip.ps1                -> SceneForge-1.0.0-win-x64-portable.zip, 154.4 MB, 17 entries
+  (extracted + scanned)                              -> CLEAN: no .cs/.csproj/.sln/.pdb/dotfiles
+packaging\scripts\Verify-PortableBuild.ps1 -ZipPath  -> "PASS: all native-component diagnostics reported success
+                                                       in the isolated folder" (fresh %TEMP%, PATH cleared)
+packaging\Tests\Test-PortableZipContents.ps1          -> all cases passed
+packaging\Tests\Test-SetPackageVersion.ps1            -> all cases passed
+packaging\Tests\Test-ReleaseVersioning.ps1            -> all 15 cases passed
+Ran the built SceneForge.App.exe, driven via UI Automation:
+  restored window rect (43,0)-(1323,728), top >= 0                          -> title bar on-screen (not clipped)
+  Maximize button  -> window (0,0)-(1366,728) == work area exactly          -> no taskbar cover, no off-screen spill
+  Restore button   -> present when maximized, restores                     -> ok
+  Minimize button  -> WindowVisualState = Minimized                        -> ok
+  Close button     -> process exits                                        -> ok
+STA layout probe: ListView (app style) + 3000 items in a 300px host        -> VirtualizingStackPanel, IsVirtualizing=True,
+                                                                              Recycling, Pixel, CanContentScroll=True,
+                                                                              9 realized containers  (virtualization intact)
+Relative-luminance contrast script over the actual palette hex values      -> every text pairing >= WCAG AA 4.5:1
+                                                                              (light + dark); numbers folded into the report
+```
+
+### Findings
+
+**Blockers:** none.
+
+**Major issues:** none. The follow-up round's own real bug (custom caption
+clipped above the screen top on a display shorter than the 820 px default
+window, because `WindowStyle="None"` leaves Windows no OS caption to keep
+on-screen) was already found and fixed by the phase before this review,
+with a unit test (`WindowPlacementMathTests`) and a real-run verification;
+this review re-confirmed both.
+
+**Minor issues:**
+
+| # | Issue | Disposition |
+|---|---|---|
+| 1 | **`ListView` was fully retemplated** (rounded container) but the CLAUDE.md rule 6/7 / Phase 10 "load-bearing" virtualization property was only argued in prose, not tested. | **Verified intact** empirically (STA layout probe: 3000 items -> 9 realized containers, panel is `VirtualizingStackPanel`, `CanContentScroll`/`IsVirtualizing` true) and **`ListViewVirtualizationTests` added** so a future retemplate that breaks it fails `dotnet test`. |
+| 2 | `MainWindow.WindowProc` (a `WM_GETMINMAXINFO` hook) could let a P/Invoke exception escape into the WPF message loop. | **Fixed** - hook body wrapped in `try/catch`; on the failure path it leaves the message unhandled so the OS default maximize applies (cosmetic, not a crash). |
+| 3 | `Marshal.StructureToPtr(mmi, lParam, fDeleteOld: true)` - `true` is the wrong value when overwriting an OS-owned `MINMAXINFO` buffer (harmless for this all-blittable struct, but incorrect). | **Fixed** to `false`. Maximize re-verified on the running exe (exact work-area fit). |
+| 4 | `docs/UI_POLISH_REPORT.md` claimed `Card` has a "barely-there drop shadow" - the `Card` style has a 1-px border and no `Effect`. Test counts were stale (76/698). One contrast-table row still referenced the pre-capsule `AccentText on Accent` pairing. | **Report corrected** - no shadow, 77/699, re-measured contrast table. |
+| 5 | `WindowStyle="None"` removes the Alt+Space system menu; `FitIntoWorkArea` first-centres on the *primary* monitor's work area regardless of which monitor the window later opens on. | **Documented** as known limitations in `UI_POLISH_REPORT.md` section 9. Caption buttons are keyboard-reachable (Tab); Alt+F4 still closes. Not worth the added surface to fix for a first-launch position nicety. |
+| 6 | Outer `Brush.WindowBorder` edge is ~1.8:1 (light) / ~2.5:1 (dark) vs the window background - below the 3:1 non-text-contrast guideline if read as a UI-component boundary. | **Left as-is, documented.** The window-boundary cue is carried by the DWM `GlassFrameThickness="1"` system frame + drop-shadow (user-agent-drawn, WCAG-exempt); `WindowBorder` is a supplementary inner line. The real-run screenshot shows the window clearly bounded. |
+| 7 | `#pragma warning disable SA1307, SA1310` in `MainWindow.xaml.cs` references StyleCop rules not enabled in this repo. | **Left** - harmless no-op; documents the intent (lowercase native-struct field names). Build is 0-warning with or without it. |
+| 8 | Pre-existing: `Brush.Warning` is defined in both palettes but referenced nowhere in the app. Pre-existing: portable ZIP / installer ship no third-party license text. | Not introduced by Phase 17. The license-file gap is already tracked (Phase 14 review "known gaps toward a public release"; `LICENSE_NOTICE.md` states legal review is required before any public distribution). |
+
+### Risk-category checklist
+
+| Category | Result |
+|---|---|
+| Web dependencies | None. No `HttpClient`, no URL fetched at runtime; the only new native call is `user32.dll` `GetMonitorInfo`/`MonitorFromWindow`. `AppSupportURL` in the `.iss` is Add/Remove-Programs metadata only. |
+| Unbounded memory / concurrency | None. No new queues/caches/threads/`Task.Run`. ListView virtualization confirmed intact (finding 1). The one `DropShadowEffect` is on the transient ComboBox popup only. |
+| UI-thread work | All new code (`FitIntoWorkArea`, `OnWindowStateChanged`, the `WM_GETMINMAXINFO` hook, `WindowChromeViewModel` commands) is trivial synchronous arithmetic / property sets on the UI thread. No blocking I/O, no `.Result`/`.Wait()`. |
+| Unsafe process invocation | None added. Packaging scripts invoke `dotnet publish` at dev time only. |
+| Timing drift | N/A - no duration / frame-rate / timeline math touched. `WindowPlacementMath` is pure geometry, no time. |
+| Silent fallback | The `WM_GETMINMAXINFO` hook degrades gracefully (OS default maximize) if `MonitorFromWindow`/`GetMonitorInfo` fail or the body throws - acceptable for window chrome, and now explicit (finding 2). Font fallback (`Segoe UI Variable Text` -> `Segoe UI`) is normal. |
+| Missing cancellation | N/A - no async / long-running operations added. |
+| Unverifiable claims | The report's contrast numbers were re-derived from the palette hex values (script); the "Card drop shadow" and test-count claims were wrong and corrected (finding 4); the real-run window-control behaviour was reproduced, not trusted. |
+| Packaging omissions | Audited: the fresh portable ZIP is 17 runtime-only files (`SceneForge.App.exe` + 5 WPF native `*_cor3.dll` + `tools\ffmpeg\` x9 + `tools\opencv\` x2). The prior round's `.gitkeep` leak and 4 `.pdb` files are gone (ffmpeg staging now skips dotfiles; publish strips `*.pdb`). `New-PortableZip.ps1` gained a hard gate + `SceneForge.iss` an `Excludes:` clause; `Verify-PortableBuild.ps1` still PASSes. Debug-symbol decision (strip; deterministic build makes exact-commit symbols regenerable) is documented in `PACKAGING_REPORT.md`. |
+
+### Fixes applied in this review
+
+- `src/SceneForge.App/MainWindow.xaml.cs`: `WM_GETMINMAXINFO` hook wrapped
+  in `try/catch` (never let an exception into the message loop);
+  `Marshal.StructureToPtr` -> `fDeleteOld: false`.
+- `tests/SceneForge.App.Tests/Themes/ListViewVirtualizationTests.cs` (new):
+  STA-thread probe asserting the retemplated `ListView` still virtualizes
+  (3000 items -> < 100 realized containers; `VirtualizingStackPanel`;
+  `IsVirtualizing` / `CanContentScroll` true).
+- `docs/UI_POLISH_REPORT.md`: removed the false "Card drop shadow" line,
+  corrected test counts (77 App / 699 solution), replaced the contrast
+  table with re-measured ratios, added two new known limitations
+  (Alt+Space, primary-monitor first-centre) and a "Release review" section.
+
+### Conclusion
+
+No blockers, no major issues. The one genuine risk a strict review of a
+control-retemplating UI phase must chase - that rounding the `ListView`
+container silently defeated the virtualization CLAUDE.md rule 6/7 and the
+Phase 10 report both call load-bearing - was run down empirically (it
+holds: 9 of 3000 containers realized) and is now locked in by a regression
+test. Two small stability/correctness hardenings were applied to the
+`WM_GETMINMAXINFO` P/Invoke hook and re-verified on the running exe. The
+portable ZIP was rebuilt from scratch and re-audited (17 runtime-only
+files, `Verify-PortableBuild.ps1` PASS). Full suite 699/699 in Release;
+build and format clean. `docs/UI_POLISH_REPORT.md` is updated alongside
+this review.
