@@ -27,7 +27,14 @@ internal static class ClipFrameMetricsPipeline
         using var scratchBgr = new Mat();
         try
         {
-            await foreach (var frame in frames.WithCancellation(cancellationToken))
+            // ConfigureAwait(false) required, not optional - see
+            // Detection.Signals.SignalPipeline.ComputeAsync's own remarks
+            // (this method is its Extraction analogue) and
+            // docs/UI_RESPONSIVENESS_AUDIT.md: without it, a UI-thread
+            // caller has every per-frame OpenCvSharp continuation below
+            // marshaled back onto the UI dispatcher instead of a
+            // thread-pool thread, freezing the UI for the run's duration.
+            await foreach (var frame in frames.WithCancellation(cancellationToken).ConfigureAwait(false))
             {
                 cancellationToken.ThrowIfCancellationRequested();
 

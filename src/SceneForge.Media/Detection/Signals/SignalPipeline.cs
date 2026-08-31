@@ -39,7 +39,19 @@ internal sealed class SignalPipeline
         using var scratchBgr = new Mat();
         try
         {
-            await foreach (var frame in frames.WithCancellation(cancellationToken))
+            // ConfigureAwait(false) is required here, not optional -
+            // WithCancellation and ConfigureAwait are independent knobs, and
+            // omitting this one is a real, previously-shipped UI-freeze bug
+            // (see docs/UI_RESPONSIVENESS_AUDIT.md): a caller that invokes
+            // this whole pipeline directly from a UI thread (as
+            // AnalysisProgressViewModel does) causes every per-frame
+            // continuation below - the actual OpenCvSharp signal-extraction
+            // work, the dominant CPU cost in this pipeline - to be marshaled
+            // back onto that UI thread's dispatcher queue instead of running
+            // on a thread-pool thread, effectively serializing the whole
+            // video's analysis onto the UI message loop and freezing it,
+            // Cancel button included, for the run's full duration.
+            await foreach (var frame in frames.WithCancellation(cancellationToken).ConfigureAwait(false))
             {
                 cancellationToken.ThrowIfCancellationRequested();
 

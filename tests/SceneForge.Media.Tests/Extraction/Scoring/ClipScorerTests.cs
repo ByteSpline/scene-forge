@@ -96,6 +96,44 @@ public class ClipScorerTests
         Assert.Equal(RejectionReason.TooCloseToExclusion, reason.Code);
     }
 
+    // Regression coverage for docs/CLEAN_CLIP_RETENTION_AUDIT.md: a
+    // candidate sitting exactly BoundaryGuard (250ms, CleanClipExtractionOptions'
+    // own default) away from the nearest excluded interval - i.e. the
+    // ClipCandidateGenerator geometry every single-candidate remaining
+    // range produces, the common case for any scene not much longer than
+    // MaxClipDuration - must PASS TransitionDistance under the current
+    // defaults. Under the OLD defaults (TransitionSafeDistance=2s), this
+    // same 250ms distance scored 0.125, well under MinAcceptableFactorScore
+    // (0.3), so it was rejected regardless of footage quality; verified
+    // directly against real ffmpeg that this was the actual mechanism
+    // discarding the overwhelming majority of scenes shorter than ~8.5s in
+    // a real multi-transition source (docs/CLEAN_CLIP_RETENTION_AUDIT.md).
+    [Fact]
+    public void Score_ExactlyBoundaryGuardDistanceFromExclusion_PassesTransitionDistanceUnderCurrentDefaults()
+    {
+        var boundaryGuardDistance = CleanClipScoringOptions.Default.BoundaryGuard;
+
+        var score = ClipScorer.Score(Candidate, GoodFrames(), boundaryGuardDistance, Options);
+
+        var reason = score.Reasons.Single(r => r.Factor == "TransitionDistance");
+        Assert.True(reason.Passed, $"expected a candidate {boundaryGuardDistance.TotalMilliseconds}ms from the nearest exclusion to pass TransitionDistance under current defaults - {reason.Detail}");
+        Assert.True(score.Accepted);
+    }
+
+    [Fact]
+    public void Score_ExactlyBoundaryGuardDistanceFromExclusion_WouldHaveFailedUnderThePreviousDefaults()
+    {
+        var boundaryGuardDistance = CleanClipScoringOptions.Default.BoundaryGuard;
+        var previousDefaults = Options with { MinClipDuration = TimeSpan.FromSeconds(3), TransitionSafeDistance = TimeSpan.FromSeconds(2) };
+
+        var score = ClipScorer.Score(Candidate, GoodFrames(), boundaryGuardDistance, previousDefaults);
+
+        var reason = score.Reasons.Single(r => r.Factor == "TransitionDistance");
+        Assert.False(reason.Passed);
+        Assert.Equal(RejectionReason.TooCloseToExclusion, reason.Code);
+        Assert.False(score.Accepted);
+    }
+
     [Fact]
     public void Score_BorderEdgesDominateInterior_RejectsWithSuspectedOverlay()
     {

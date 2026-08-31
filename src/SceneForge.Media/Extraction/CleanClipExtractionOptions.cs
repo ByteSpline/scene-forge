@@ -39,9 +39,24 @@ public sealed record CleanClipExtractionOptions
 // field is clamped in its init setter (same pattern as
 // TransitionDetectionProfile) so a misconfigured caller can never produce
 // negative durations, out-of-range ratios, or a zero-weight scorer that
-// silently ignores every factor. All values here are deliberately
-// heuristic starting points, not calibrated against measured real-footage
-// data (CLAUDE.md rule 10) - see docs/PHASE_07_REPORT.md.
+// silently ignores every factor.
+//
+// MinClipDuration and TransitionSafeDistance were recalibrated (see
+// docs/CLEAN_CLIP_RETENTION_AUDIT.md) after a real-footage report of only
+// 18-19 clips surviving from a 320-scene source - traced to
+// TransitionSafeDistance's old default (2s) requiring a candidate be at
+// least MinAcceptableFactorScore (0.3) x TransitionSafeDistance = 600ms
+// from the nearest exclusion just to avoid automatic rejection on that one
+// factor alone, while BoundaryGuard (250ms) only ever pushed a candidate
+// 250ms away - so no scene shorter than ~8.5s could ever produce an
+// accepted clip, regardless of footage quality (verified directly against
+// the real ClipCandidateGenerator/ClipScorer pipeline). The correctness
+// guarantee itself (never include a contaminated frame) is unaffected by
+// either value - it is enforced structurally by IntervalSubtractor, before
+// either of these fields is even consulted; both are extra margin on top
+// of that guarantee, not the guarantee. Every other value here remains a
+// deliberately heuristic starting point, not calibrated against measured
+// real-footage data (CLAUDE.md rule 10) - see docs/PHASE_07_REPORT.md.
 public sealed record CleanClipScoringOptions
 {
     private static readonly TimeSpan MinAllowedClipDuration = TimeSpan.FromSeconds(1);
@@ -49,7 +64,7 @@ public sealed record CleanClipScoringOptions
     private static readonly TimeSpan MaxAllowedBoundaryGuard = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan MaxAllowedTransitionSafeDistance = TimeSpan.FromSeconds(30);
 
-    private readonly TimeSpan _minClipDuration = TimeSpan.FromSeconds(3);
+    private readonly TimeSpan _minClipDuration = TimeSpan.FromSeconds(2);
     private readonly TimeSpan _maxClipDuration = TimeSpan.FromSeconds(5);
     private readonly TimeSpan _boundaryGuard = TimeSpan.FromMilliseconds(250);
     private readonly double _overlapFraction = 0.5;
@@ -57,7 +72,7 @@ public sealed record CleanClipScoringOptions
     private readonly double _stabilityReferenceValue = 0.05;
     private readonly double _freezeNearZeroThreshold = 0.002;
     private readonly double _freezeRiskRejectionThreshold = 0.5;
-    private readonly TimeSpan _transitionSafeDistance = TimeSpan.FromSeconds(2);
+    private readonly TimeSpan _transitionSafeDistance = TimeSpan.FromSeconds(0.5);
     private readonly double _overlayRatioReference = 3.0;
     private readonly double _overlaySuspicionRejectionThreshold = 0.7;
     private readonly double _acceptanceThreshold = 0.5;
@@ -72,6 +87,9 @@ public sealed record CleanClipScoringOptions
 
     // Shortest candidate clip generated. A remaining (post-subtraction,
     // post-guard) range shorter than this yields no candidate at all.
+    // Lowered from 3s to 2s (see the class-level remarks) - a real clean
+    // segment between two closely-spaced transitions should not be
+    // discarded outright just because it cannot fill a longer window.
     public TimeSpan MinClipDuration
     {
         get => _minClipDuration;
@@ -139,6 +157,13 @@ public sealed record CleanClipScoringOptions
 
     // Gap from the nearest excluded interval considered "fully safe"
     // (TransitionDistance score of 1.0); scales linearly below that.
+    // Lowered from 2s to 0.5s (see the class-level remarks) to match
+    // SyntheticFixtureCatalog's own real transition contamination width
+    // (TransitionDuration = 0.5s, the ground truth docs/ACCURACY_REPORT.md
+    // is itself measured against) plus TransitionDetectionProfile's
+    // PreBuffer/PostBuffer (100ms each) already folded into every excluded
+    // interval - 2s asked for four times that width of extra clearance
+    // with no supporting evidence.
     public TimeSpan TransitionSafeDistance
     {
         get => _transitionSafeDistance;

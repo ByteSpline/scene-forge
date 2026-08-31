@@ -164,4 +164,57 @@ public class CleanClipScoringSweepTests
             }
         });
     }
+
+    // Regression coverage for a real, shipped UI-freeze bug (see
+    // docs/UI_RESPONSIVENESS_AUDIT.md) - the streaming-scoring analogue of
+    // SignalPipelineTests' own equivalent test (see its remarks for the
+    // full mechanism): RunAsync's internal `await foreach` used to omit
+    // ConfigureAwait(false), so a caller invoking it directly from a
+    // context-capturing thread (a WPF UI thread in production, via
+    // CleanClipExtractor) had every per-metrics-sample continuation
+    // marshaled back onto that thread instead of running on a thread-pool
+    // thread.
+    [Fact]
+    public async Task RunAsync_ConsumedFromAContextCapturingThread_NeverPostsPerSampleWorkBackToThatContext()
+    {
+        var spy = new SynchronizationContextSpy();
+        var original = SynchronizationContext.Current;
+        SynchronizationContext.SetSynchronizationContext(spy);
+        try
+        {
+            var frames = Enumerable.Range(0, 6).Select(i => ClipFrameMetricsBuilder.Sample(i * 0.5)).ToList();
+            var candidates = new[] { Candidate(0, 0, 3) };
+
+            var clips = new List<CleanClip>();
+            await foreach (var clip in CleanClipScoringSweep.RunAsync(GenuinelyYieldingAsync(frames), candidates, [], Options).ConfigureAwait(false))
+            {
+                clips.Add(clip);
+            }
+
+            Assert.Single(clips);
+            Assert.Equal(0, spy.PostCount);
+            Assert.Equal(0, spy.SendCount);
+        }
+        finally
+        {
+            SynchronizationContext.SetSynchronizationContext(original);
+        }
+    }
+
+    // Unlike ToAsync above (synchronous yields, never exercises real
+    // context-capture behavior), forces a genuine asynchronous suspension
+    // before every sample via its own ConfigureAwait(false), so the
+    // suspension mechanism itself never touches whatever
+    // SynchronizationContext the test installed.
+    private static async IAsyncEnumerable<ClipFrameMetrics> GenuinelyYieldingAsync(
+        IEnumerable<ClipFrameMetrics> frames,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        foreach (var frame in frames)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await Task.Delay(1, cancellationToken).ConfigureAwait(false);
+            yield return frame;
+        }
+    }
 }

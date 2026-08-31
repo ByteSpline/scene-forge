@@ -84,6 +84,17 @@ public sealed partial class SceneReviewViewModel : ObservableObject
         RecomputeIncludedCount();
     }
 
+
+    
+        [RelayCommand]
+    private void IncludeAll()
+    {
+        foreach (var clip in Clips)
+        {
+            clip.IsIncluded = true;
+        }
+    }
+
     [RelayCommand(CanExecute = nameof(CanContinue))]
     private async Task Continue()
     {

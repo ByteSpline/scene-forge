@@ -7,6 +7,15 @@ internal sealed class FakeTransitionDetector : ITransitionDetector
 {
     public IReadOnlyList<TransitionDetection> Result { get; set; } = [];
 
+    // Independent of Result.Count when set - simulates the real detector's
+    // own behavior, where the raw pre-fusion candidate stream
+    // (RawCandidatesSoFar) can run far ahead of the final, deduplicated
+    // Result count (see TransitionFuser's own remarks: every classifier
+    // re-scans its sliding window on every frame). Defaults to Result.Count
+    // when unset, matching the simple 1:1 case most tests don't need to
+    // distinguish.
+    public int? RawCandidatesSoFarOverride { get; set; }
+
     // When set, DetectAsync awaits this before returning - lets a test hold
     // the operation open long enough to call a Cancel command and observe
     // cooperative cancellation (CLAUDE.md rule 5), something a fully
@@ -36,7 +45,7 @@ internal sealed class FakeTransitionDetector : ITransitionDetector
         progress?.Report(new TransitionDetectionProgress
         {
             FramesAnalyzed = 1,
-            RawCandidatesSoFar = Result.Count,
+            RawCandidatesSoFar = RawCandidatesSoFarOverride ?? Result.Count,
             LastSourceTimestamp = TimeSpan.Zero,
             Elapsed = TimeSpan.Zero,
         });

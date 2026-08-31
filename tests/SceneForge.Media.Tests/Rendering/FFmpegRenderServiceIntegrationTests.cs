@@ -444,4 +444,260 @@ public sealed class FFmpegRenderServiceIntegrationTests : IDisposable
         Assert.Single(outputMediaInfo.AudioStreams);
         Assert.Equal("aac", outputMediaInfo.PrimaryAudioStream?.CodecName);
     }
+
+    // Regression coverage for a real, measured bug distinct from (and not
+    // fixed by) RenderPlanBuilder's per-segment duration quantization or
+    // its cumulative-apportionment fix below: ffmpeg's fps filter (the
+    // frame-RATE conversion every segment goes through to reach
+    // RenderOutputSpec.FrameRate) duplicates/drops frames based on
+    // presentation timestamps, not on the trim window's exact requested
+    // duration - when a segment's SOURCE frame rate differs from the
+    // OUTPUT frame rate, this can emit MORE frames than
+    // FrameRate.ToFrameCount(segment.SourceDuration) calls for (verified
+    // directly against real ffmpeg 9.0.1, outside SceneForge entirely: a
+    // 30fps source trimmed to a frame-exact-at-25fps duration and
+    // converted with fps=25/1 alone produced a consistent +1 frame on
+    // EVERY segment, and 60 such segments concatenated measured 488 actual
+    // frames against 470 expected - almost 20 frames/0.7s past the
+    // verifier's one-frame tolerance). None of this project's other real-
+    // ffmpeg render tests catch it because every committed fixture (and
+    // every synthesized-at-test-time source elsewhere in this file) is
+    // already at the exact frame rate the test then renders at - a real
+    // user's own footage has no reason to match SceneForge's fixed list of
+    // selectable output frame rates (AnalysisSettingsViewModel.AvailableFrameRates:
+    // 24/25/30/29.97/50/60fps), so this mismatch is the common case, not
+    // an edge case. This test uses a synthesized 30fps source rendered at
+    // a 25fps OutputSpec specifically to exercise it, across 40
+    // non-frame-aligned segments through the real SinglePass path (still
+    // comfortably under InitialBatchSegmentCount so SinglePass, not
+    // Batched, actually runs) - a handful of segments is not enough to
+    // reliably distinguish "fixed" from "unfixed" here (measured only 1
+    // frame of drift for 5 segments, exactly AT the one-frame tolerance
+    // boundary rather than clearly past it), because unlike the Batched/
+    // DistinctDedup paths below, SinglePass has no whole-graph '-frames:v'
+    // pinning to fall back on - the per-segment fps-filter excess this
+    // fix targets is the ONLY thing bounding its output length, and it
+    // compounds with segment count (verified directly against real
+    // ffmpeg: 1/4/8/10 excess frames measured at 5/20/40/60 segments of
+    // this exact pattern) exactly like the already-fixed per-segment
+    // duration-quantization bug did before it.
+    [SkippableFact]
+    public async Task RenderAsync_RealFfmpegSourceFrameRateDiffersFromOutputFrameRate_SinglePass_VerifiesWithinTolerance()
+    {
+        Skip.IfNot(RealFfmpegAvailability.IsAvailable, RealFfmpegAvailability.SkipReason);
+        Directory.CreateDirectory(_outputDirectory);
+
+        var processRunner = new ProcessRunner();
+        var toolLocator = new FfmpegToolLocator(processRunner);
+        var ffprobeService = new FfprobeService(processRunner, toolLocator);
+
+        var videoPath = await SynthesizeThirtyFpsVideoSourceAsync(processRunner, _outputDirectory, durationSeconds: 18);
+        var audioPath = await SynthesizeSilentAudioAsync(processRunner, _outputDirectory, durationSeconds: 16);
+
+        var sourceMediaInfo = await ffprobeService.ProbeAsync(videoPath, CancellationToken.None);
+
+        // Deliberately non-frame-aligned at both 30fps (source) and 25fps
+        // (output) - 0.28s, 0.312s, 0.4s, 1/3s, 0.1s, repeated 8x (40
+        // segments total, ~13.4s of placements, comfortably inside the
+        // 18s source).
+        var outputTimeBase = new RationalFrameRate(25, 1);
+        double[] basePattern = [0.28, 0.312, 0.4, 1.0 / 3.0, 0.1];
+        var durations = Enumerable.Range(0, 40).Select(i => basePattern[i % basePattern.Length]).ToArray();
+        var cursor = 0.0;
+        var placements = new List<TimelinePlacement>();
+        for (var i = 0; i < durations.Length; i++)
+        {
+            placements.Add(TimelinePlanBuilder.CreatePlacement(i, i, sourceStartSeconds: cursor, sourceDurationSeconds: durations[i]));
+            cursor += durations[i] + 0.05;
+        }
+
+        var timelinePlan = TimelinePlanBuilder.CreatePlan(placements, outputTimeBase);
+
+        var renderPlan = new RenderPlanBuilder().Build(new RenderPlanRequest
+        {
+            TimelinePlan = timelinePlan,
+            SourceFilePath = videoPath,
+            SourceMediaInfo = sourceMediaInfo,
+            OutputSpec = new RenderOutputSpec { Width = 160, Height = 120, FrameRate = outputTimeBase, FitMode = AspectFitMode.Letterbox },
+            Audio = new RenderAudioTrackSpec { FilePath = audioPath, TrimStart = TimeSpan.Zero, TrimDuration = timelinePlan.PlannedDuration },
+        });
+
+        Assert.Equal(FFmpegRenderService.RenderStrategy.SinglePass, FFmpegRenderService.SelectRenderStrategy(renderPlan));
+
+        var renderService = new FFmpegRenderService(processRunner, toolLocator, ffprobeService, new AdaptiveResourceGovernor());
+        var outputPath = Path.Combine(_outputDirectory, "rendered_ratemismatch_singlepass.mp4");
+
+        var result = await renderService.RenderAsync(renderPlan, outputPath, progress: null, CancellationToken.None);
+
+        _output.WriteLine($"PlannedVideoDuration={renderPlan.PlannedVideoDuration}, ActualDuration={result.Verification.ActualDuration}, Delta={result.Verification.DurationDelta}, Tolerance={result.Verification.DurationTolerance}");
+
+        Assert.True(File.Exists(outputPath));
+        Assert.True(result.Verification.IsValid, $"Verification failed: {result.Verification}");
+        Assert.True(result.Verification.DurationWithinTolerance);
+    }
+
+    // Same root cause as the SinglePass test above, driven through the
+    // Batched pre-render/concat-demuxer path instead (BuildSegmentRunArguments/
+    // RenderFilterGraphBuilder.BuildSeekedVideoConcat share the exact same
+    // per-segment filter chain, including the frame-domain trim fix, as
+    // the SinglePass path's BuildVideoConcat - see RenderFilterGraphBuilder.BuildSegmentFilter).
+    // 70 all-distinct, non-frame-aligned segments from a 30fps source
+    // force 2 batches at a 25fps output.
+    [SkippableFact]
+    public async Task RenderAsync_RealFfmpegSourceFrameRateDiffersFromOutputFrameRate_Batched_VerifiesWithinTolerance()
+    {
+        Skip.IfNot(RealFfmpegAvailability.IsAvailable, RealFfmpegAvailability.SkipReason);
+        Directory.CreateDirectory(_outputDirectory);
+
+        var processRunner = new ProcessRunner();
+        var toolLocator = new FfmpegToolLocator(processRunner);
+        var ffprobeService = new FfprobeService(processRunner, toolLocator);
+
+        var videoPath = await SynthesizeThirtyFpsVideoSourceAsync(processRunner, _outputDirectory, durationSeconds: 20);
+        var audioPath = await SynthesizeSilentAudioAsync(processRunner, _outputDirectory, durationSeconds: 32);
+
+        var sourceMediaInfo = await ffprobeService.ProbeAsync(videoPath, CancellationToken.None);
+
+        var outputTimeBase = new RationalFrameRate(25, 1);
+        const int segmentCount = 70; // all distinct -> 2 batches of <=60
+        var placements = Enumerable.Range(0, segmentCount)
+            .Select(i => TimelinePlanBuilder.CreatePlacement(
+                i,
+                i,
+                sourceStartSeconds: i * 0.25, // spread across the 20s source
+                sourceDurationSeconds: 0.28 + (i % 7) * 0.011)) // non-frame-aligned at 25fps and 30fps
+            .ToArray();
+        var timelinePlan = TimelinePlanBuilder.CreatePlan(placements, outputTimeBase);
+
+        var renderPlan = new RenderPlanBuilder().Build(new RenderPlanRequest
+        {
+            TimelinePlan = timelinePlan,
+            SourceFilePath = videoPath,
+            SourceMediaInfo = sourceMediaInfo,
+            OutputSpec = new RenderOutputSpec { Width = 160, Height = 120, FrameRate = outputTimeBase, FitMode = AspectFitMode.Letterbox },
+            Audio = new RenderAudioTrackSpec { FilePath = audioPath, TrimStart = TimeSpan.Zero, TrimDuration = timelinePlan.PlannedDuration },
+        });
+
+        Assert.Equal(FFmpegRenderService.RenderStrategy.Batched, FFmpegRenderService.SelectRenderStrategy(renderPlan));
+
+        var renderService = new FFmpegRenderService(processRunner, toolLocator, ffprobeService, new AdaptiveResourceGovernor());
+        var outputPath = Path.Combine(_outputDirectory, "rendered_ratemismatch_batched.mp4");
+
+        var result = await renderService.RenderAsync(renderPlan, outputPath, progress: null, CancellationToken.None);
+
+        _output.WriteLine($"PlannedVideoDuration={renderPlan.PlannedVideoDuration}, ActualDuration={result.Verification.ActualDuration}, Delta={result.Verification.DurationDelta}, Tolerance={result.Verification.DurationTolerance}");
+
+        Assert.True(File.Exists(outputPath));
+        Assert.True(result.Verification.IsValid, $"Verification failed: {result.Verification}");
+        Assert.True(result.Verification.DurationWithinTolerance);
+    }
+
+    // Same root cause again, driven through the DistinctDedup pre-render
+    // path: 6 distinct 30fps-source windows repeated to 150 placements at
+    // a 25fps output. RenderDistinctDedupStageAAsync pre-renders each
+    // DISTINCT window once via the same per-segment filter chain (again
+    // including the frame-domain trim fix), so this proves the fix holds
+    // under heavy reuse too, not just per-window in isolation.
+    [SkippableFact]
+    public async Task RenderAsync_RealFfmpegSourceFrameRateDiffersFromOutputFrameRate_DistinctDedup_VerifiesWithinTolerance()
+    {
+        Skip.IfNot(RealFfmpegAvailability.IsAvailable, RealFfmpegAvailability.SkipReason);
+        Directory.CreateDirectory(_outputDirectory);
+
+        var processRunner = new ProcessRunner();
+        var toolLocator = new FfmpegToolLocator(processRunner);
+        var ffprobeService = new FfprobeService(processRunner, toolLocator);
+
+        var videoPath = await SynthesizeThirtyFpsVideoSourceAsync(processRunner, _outputDirectory, durationSeconds: 5);
+        var audioPath = await SynthesizeSilentAudioAsync(processRunner, _outputDirectory, durationSeconds: 35);
+
+        var sourceMediaInfo = await ffprobeService.ProbeAsync(videoPath, CancellationToken.None);
+
+        var outputTimeBase = new RationalFrameRate(25, 1);
+        const int distinctWindows = 6;
+        const int segmentCount = 150;
+        var placements = Enumerable.Range(0, segmentCount)
+            .Select(i =>
+            {
+                var w = i % distinctWindows;
+                return TimelinePlanBuilder.CreatePlacement(
+                    i,
+                    w,
+                    sourceStartSeconds: w * 0.6,
+                    sourceDurationSeconds: 0.28 + w * 0.011); // non-frame-aligned at 25fps and 30fps
+            })
+            .ToArray();
+        var timelinePlan = TimelinePlanBuilder.CreatePlan(placements, outputTimeBase);
+
+        var renderPlan = new RenderPlanBuilder().Build(new RenderPlanRequest
+        {
+            TimelinePlan = timelinePlan,
+            SourceFilePath = videoPath,
+            SourceMediaInfo = sourceMediaInfo,
+            OutputSpec = new RenderOutputSpec { Width = 160, Height = 120, FrameRate = outputTimeBase, FitMode = AspectFitMode.Letterbox },
+            Audio = new RenderAudioTrackSpec { FilePath = audioPath, TrimStart = TimeSpan.Zero, TrimDuration = timelinePlan.PlannedDuration },
+        });
+
+        Assert.Equal(FFmpegRenderService.RenderStrategy.DistinctDedup, FFmpegRenderService.SelectRenderStrategy(renderPlan));
+
+        var renderService = new FFmpegRenderService(processRunner, toolLocator, ffprobeService, new AdaptiveResourceGovernor());
+        var outputPath = Path.Combine(_outputDirectory, "rendered_ratemismatch_dedup.mp4");
+
+        var result = await renderService.RenderAsync(renderPlan, outputPath, progress: null, CancellationToken.None);
+
+        _output.WriteLine($"PlannedVideoDuration={renderPlan.PlannedVideoDuration}, ActualDuration={result.Verification.ActualDuration}, Delta={result.Verification.DurationDelta}, Tolerance={result.Verification.DurationTolerance}");
+
+        Assert.True(File.Exists(outputPath));
+        Assert.True(result.Verification.IsValid, $"Verification failed: {result.Verification}");
+        Assert.True(result.Verification.DurationWithinTolerance);
+    }
+
+    // A synthesized, disclosed-synthetic 30fps source (testsrc2, same lavfi
+    // generator tests/fixtures/README.md documents for this project's other
+    // synthetic fixtures) - deliberately a DIFFERENT frame rate than every
+    // committed fixture (25fps) and every RenderOutputSpec.FrameRate this
+    // file's other tests use (25fps), so tests built on it exercise the
+    // source/output frame-rate MISMATCH path real ffmpeg-backed tests
+    // elsewhere in this project never touch.
+    private static async Task<string> SynthesizeThirtyFpsVideoSourceAsync(ProcessRunner processRunner, string directory, double durationSeconds)
+    {
+        var path = Path.Combine(directory, $"synthetic_30fps_source_{Guid.NewGuid():N}.mp4");
+
+        var result = await processRunner.RunAsync(
+            new ProcessExecutionRequest
+            {
+                FileName = RealFfmpegAvailability.FfmpegPath,
+                Arguments =
+                [
+                    "-hide_banner", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=30",
+                    "-t", durationSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", path,
+                ],
+            },
+            CancellationToken.None);
+        Assert.True(result.ExitCode == 0, $"Failed to synthesize the 30fps video source: {result.StandardError}");
+
+        return path;
+    }
+
+    private static async Task<string> SynthesizeSilentAudioAsync(ProcessRunner processRunner, string directory, double durationSeconds)
+    {
+        var path = Path.Combine(directory, $"synthetic_audio_{Guid.NewGuid():N}.m4a");
+
+        var result = await processRunner.RunAsync(
+            new ProcessExecutionRequest
+            {
+                FileName = RealFfmpegAvailability.FfmpegPath,
+                Arguments =
+                [
+                    "-hide_banner", "-y", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
+                    "-t", durationSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    "-c:a", "aac", path,
+                ],
+            },
+            CancellationToken.None);
+        Assert.True(result.ExitCode == 0, $"Failed to synthesize the target audio track: {result.StandardError}");
+
+        return path;
+    }
 }

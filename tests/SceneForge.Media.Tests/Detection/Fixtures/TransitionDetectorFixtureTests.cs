@@ -98,6 +98,25 @@ public class TransitionDetectorFixtureTests
     private static readonly HashSet<TransitionType> RecallNotYetRequiredAboveZero =
         new HashSet<TransitionType> { TransitionType.ZoomTransition, TransitionType.DirectionalSwipe };
 
+    // Sanity ceiling on total false positives across the whole 32-fixture
+    // matrix (docs/ACCURACY_REPORT.md's own committed baseline currently
+    // measures 10) - generous headroom (3x) so ordinary run-to-run
+    // synthetic-fixture/ffmpeg-version variance never makes this flaky, but
+    // low enough to fail hard on a genuine false-positive explosion. This
+    // is deliberately a coarse, fast, always-runs-with-the-suite backstop:
+    // the *real* regression gate is the Phase 12 accuracy tool's
+    // RegressionGate.FalsePositivesPerMinute check (per-fixture-group, run
+    // via the accuracy-regression CI job) - this assertion exists because
+    // that gate is NOT part of `dotnet test`, so a false-positive
+    // regression could otherwise ship without ever failing the normal test
+    // suite. Added after a real production report of "10,917 transitions
+    // detected" turned out to be a UI-layer bug (see
+    // docs/DETECTION_REPORTING_AUDIT.md) that this test suite could not
+    // have caught either way - this assertion is a genuine strengthening
+    // for the *next* time detection itself regresses, not a claim that it
+    // would have caught that specific incident.
+    private const int MaxAcceptableTotalFalsePositives = 30;
+
     private void ReportAndAssert(
         List<(TransitionType Type, bool TruePositive, TimeSpan? BoundaryError)> matches,
         List<TransitionType> falsePositives)
@@ -141,6 +160,13 @@ public class TransitionDetectorFixtureTests
         }
 
         _output.WriteLine($"Total false positives across all fixtures: {falsePositives.Count}");
+        if (falsePositives.Count > MaxAcceptableTotalFalsePositives)
+        {
+            failures.Add(
+                $"Total false positives ({falsePositives.Count}) exceeded the sanity ceiling ({MaxAcceptableTotalFalsePositives}) - " +
+                "a real false-positive explosion, not measurement noise.");
+        }
+
         Assert.True(failures.Count == 0, string.Join(" | ", failures));
     }
 
