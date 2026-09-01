@@ -118,7 +118,46 @@ internal static class RenderFilterGraphBuilder
         AppendRotationFilters(builder, rotationDegrees);
         AppendFitFilters(builder, spec);
 
+        // ffmpeg's fps filter (the frame-RATE conversion below, needed
+        // whenever a segment's source footage isn't already at
+        // spec.FrameRate) duplicates/drops frames to hit the target rate
+        // based on presentation timestamps, not on the trim window's exact
+        // requested duration - when the source's native rate differs from
+        // spec.FrameRate it can emit one or more frames MORE than
+        // spec.FrameRate.ToFrameCount(segment.SourceDuration) actually
+        // calls for, because it keeps extending/duplicating the last
+        // source frame until it is told to stop, and a preceding
+        // (time-domain) trim's 'duration=' does not give it an exact
+        // downstream frame-count bound to stop at. Verified directly
+        // against real ffmpeg 9.0.1 (a 30fps source trimmed to a
+        // frame-exact-at-25fps duration and converted with fps=25/1 alone
+        // produced a consistent, deterministic +1 frame per segment,
+        // every segment, regardless of trim start offset - not a rounding
+        // fluke - and the same excess compounds across a many-segment
+        // concat exactly like the already-fixed trim-only case this
+        // segment's own duration quantization addresses: 60 segments at
+        // 30fps source / 25fps output measured 488 actual frames against
+        // 470 expected). This is a source/output-frame-rate MISMATCH bug,
+        // distinct from (and not fixed by) that per-segment duration
+        // quantization: RenderPlanBuilder already guarantees
+        // segment.SourceDuration is an exact multiple of spec.FrameRate's
+        // frame period, but the fps filter's own frame count for that
+        // exact duration is not reliably bound to the exact frame count
+        // the duration implies whenever the source's rate differs. A
+        // second, FRAME-domain trim right after fps= (start_frame/end_frame
+        // count actual output frames rather than reading PTS, so it is
+        // immune to the same boundary ambiguity) forces the segment back
+        // to exactly the intended frame count regardless of what the fps
+        // filter itself produced - verified to reduce that same 60-segment
+        // case to 470/470 with zero delta, and a no-op (by construction)
+        // whenever fps= was already exact, e.g. every fixture used
+        // elsewhere in this test suite, all of which happen to already be
+        // at the chosen output frame rate.
+        var frameCount = spec.FrameRate.ToFrameCount(segment.SourceDuration);
+
         builder.Append(",fps=").Append(spec.FrameRate.Numerator).Append('/').Append(spec.FrameRate.Denominator)
+            .Append(",trim=start_frame=0:end_frame=").Append(frameCount.ToString(CultureInfo.InvariantCulture))
+            .Append(",setpts=PTS-STARTPTS")
             .Append(",format=").Append(spec.PixelFormat)
             .Append(",setsar=").Append(spec.SampleAspectRatio.ToFfmpegRatio())
             .Append('[').Append(label).Append(']');

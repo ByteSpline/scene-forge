@@ -136,6 +136,7 @@ public sealed class FFmpegRenderService : IFFmpegRenderService
     private readonly IHardwareEncoderProbe _encoderProbe;
     private readonly RenderOutputVerifier _verifier;
     private readonly IAdaptiveResourceGovernor _resourceGovernor;
+    private readonly RenderDurationCorrector _durationCorrector;
 
     public FFmpegRenderService(IProcessRunner processRunner, IFfmpegToolLocator toolLocator, IFfprobeService ffprobeService, IAdaptiveResourceGovernor resourceGovernor)
         : this(processRunner, toolLocator, new HardwareEncoderProbe(processRunner, toolLocator), new RenderOutputVerifier(ffprobeService, processRunner, toolLocator), resourceGovernor)
@@ -160,6 +161,7 @@ public sealed class FFmpegRenderService : IFFmpegRenderService
         _encoderProbe = encoderProbe;
         _verifier = verifier;
         _resourceGovernor = resourceGovernor;
+        _durationCorrector = new RenderDurationCorrector(processRunner, toolLocator);
     }
 
     public async Task<RenderResult> RenderAsync(
@@ -199,9 +201,23 @@ public sealed class FFmpegRenderService : IFFmpegRenderService
         var stopwatch = Stopwatch.StartNew();
         var (fellBack, usedEncoder, splitEvents) = await RunWithFallbackAsync(tools.FfmpegPath, plan, resolvedOutputPath, encoder, progress, stopwatch, cancellationToken)
             .ConfigureAwait(false);
-        stopwatch.Stop();
 
         var verification = await _verifier.VerifyAsync(resolvedOutputPath, plan, cancellationToken).ConfigureAwait(false);
+        IReadOnlyList<RenderDurationCorrectionEvent> durationCorrections = [];
+
+        if (!verification.IsValid && IsDurationOnlyFailure(verification))
+        {
+            var correction = await CorrectDurationOnlyFailureAsync(
+                    tools.FfmpegPath, plan, resolvedOutputPath, usedEncoder, fellBack, verification, progress, stopwatch, cancellationToken)
+                .ConfigureAwait(false);
+            verification = correction.Verification;
+            usedEncoder = correction.UsedEncoder;
+            fellBack = correction.FellBackToSoftwareEncoder;
+            durationCorrections = correction.Corrections;
+        }
+
+        stopwatch.Stop();
+
         if (!verification.IsValid)
         {
             throw new RenderVerificationException(verification);
@@ -215,7 +231,123 @@ public sealed class FFmpegRenderService : IFFmpegRenderService
             Elapsed = stopwatch.Elapsed,
             Verification = verification,
             BatchSplitEvents = splitEvents,
+            DurationCorrections = durationCorrections,
         };
+    }
+
+    // A DURATION-ONLY verification miss (every other RenderOutputVerifier
+    // check already passed) is self-corrected here rather than ever
+    // reaching the caller as RenderVerificationException - per-product
+    // requirement, a valid render must always end in a successful output
+    // regardless of how long that takes (see
+    // docs/RENDER_DURATION_SELF_CORRECTION.md). A verification failure that
+    // ALSO fails a content check (missing stream, undecodable frame) is a
+    // real integrity problem a duration fix cannot address, and is
+    // deliberately left to surface normally.
+    internal static bool IsDurationOnlyFailure(RenderVerificationResult result) =>
+        !result.DurationWithinTolerance
+        && result.HasExpectedVideoStream
+        && result.HasExactlyOneAudioStream
+        && result.FirstFrameDecodable
+        && result.MiddleFrameDecodable
+        && result.LastFrameDecodable;
+
+    private sealed record DurationCorrectionOutcome
+    {
+        public required RenderVerificationResult Verification { get; init; }
+
+        public required VideoEncoderSelection UsedEncoder { get; init; }
+
+        public required bool FellBackToSoftwareEncoder { get; init; }
+
+        public required IReadOnlyList<RenderDurationCorrectionEvent> Corrections { get; init; }
+    }
+
+    // Bounded, three-tier self-correction for a duration-only verification
+    // miss, each tier re-verified before trying the next: (1) retry the
+    // exact same render once - cheap insurance against transient encoder
+    // timing jitter; (2) retry the whole render forced onto a software
+    // encoder - deterministic, addresses hardware-encoder frame-timing
+    // drift as the likelier root cause; (3) a guaranteed-effective
+    // corrective remux of the assembled output itself (RenderDurationCorrector)
+    // that forces the exact planned duration by construction rather than by
+    // hoping a re-encode lines up differently. Stops early, without trying
+    // further tiers, the moment a re-verification either passes or surfaces
+    // a DIFFERENT (non-duration-only) problem that a duration fix cannot
+    // address. Every tier is recorded (DurationCorrections) and traced;
+    // none of it is ever visible to the caller as a failure unless every
+    // tier is exhausted.
+    private async Task<DurationCorrectionOutcome> CorrectDurationOnlyFailureAsync(
+        string ffmpegPath,
+        RenderPlan plan,
+        string outputFilePath,
+        VideoEncoderSelection encoderUsedSoFar,
+        bool fellBackSoFar,
+        RenderVerificationResult failingVerification,
+        IProgress<RenderProgress>? progress,
+        Stopwatch stopwatch,
+        CancellationToken cancellationToken)
+    {
+        var corrections = new List<RenderDurationCorrectionEvent>();
+        var verification = failingVerification;
+        var usedEncoder = encoderUsedSoFar;
+        var fellBack = fellBackSoFar;
+
+        // Tier 1: retry the exact same render.
+        corrections.Add(BuildCorrectionEvent(RenderDurationCorrectionKind.SameEncoderRetry, verification));
+        LogAndReportCorrection(progress, stopwatch, "Verifying output duration - retrying to correct a small timing drift", verification);
+        var (retryFellBack, retryEncoder, _) = await RunWithFallbackAsync(ffmpegPath, plan, outputFilePath, usedEncoder, progress, stopwatch, cancellationToken).ConfigureAwait(false);
+        usedEncoder = retryEncoder;
+        fellBack = fellBack || retryFellBack;
+        verification = await _verifier.VerifyAsync(outputFilePath, plan, cancellationToken).ConfigureAwait(false);
+        if (verification.IsValid || !IsDurationOnlyFailure(verification))
+        {
+            return new DurationCorrectionOutcome { Verification = verification, UsedEncoder = usedEncoder, FellBackToSoftwareEncoder = fellBack, Corrections = corrections };
+        }
+
+        // Tier 2: force a software encoder - deterministic.
+        corrections.Add(BuildCorrectionEvent(RenderDurationCorrectionKind.ForcedSoftwareEncoderRetry, verification));
+        LogAndReportCorrection(progress, stopwatch, "Retrying with a software encoder to correct output duration", verification);
+        var softwareEncoder = await _encoderProbe.SelectSoftwareEncoderAsync(cancellationToken).ConfigureAwait(false);
+        var softwareAttempt = await TryRenderOnceAsync(ffmpegPath, plan, outputFilePath, softwareEncoder, progress, stopwatch, cancellationToken).ConfigureAwait(false);
+        if (!softwareAttempt.Success)
+        {
+            throw new RenderExecutionException(
+                $"The forced software-encoder duration-correction retry failed (exit code {softwareAttempt.ExitCode}): {softwareAttempt.ErrorExcerpt}");
+        }
+
+        usedEncoder = softwareEncoder;
+        fellBack = true;
+        verification = await _verifier.VerifyAsync(outputFilePath, plan, cancellationToken).ConfigureAwait(false);
+        if (verification.IsValid || !IsDurationOnlyFailure(verification))
+        {
+            return new DurationCorrectionOutcome { Verification = verification, UsedEncoder = usedEncoder, FellBackToSoftwareEncoder = fellBack, Corrections = corrections };
+        }
+
+        // Tier 3: guaranteed-effective corrective remux of the assembled
+        // output - forces the exact planned frame/sample count by
+        // construction (pad-if-short, then trim-to-exact on both streams).
+        corrections.Add(BuildCorrectionEvent(RenderDurationCorrectionKind.FrameExactRemux, verification));
+        LogAndReportCorrection(progress, stopwatch, "Applying a frame-exact duration correction", verification);
+        await _durationCorrector.CorrectAsync(outputFilePath, plan, usedEncoder, cancellationToken).ConfigureAwait(false);
+        verification = await _verifier.VerifyAsync(outputFilePath, plan, cancellationToken).ConfigureAwait(false);
+
+        return new DurationCorrectionOutcome { Verification = verification, UsedEncoder = usedEncoder, FellBackToSoftwareEncoder = fellBack, Corrections = corrections };
+    }
+
+    private static RenderDurationCorrectionEvent BuildCorrectionEvent(RenderDurationCorrectionKind kind, RenderVerificationResult verification) => new()
+    {
+        Kind = kind,
+        ActualDuration = verification.ActualDuration,
+        ExpectedDuration = verification.ExpectedDuration,
+        DurationDelta = verification.DurationDelta,
+    };
+
+    private static void LogAndReportCorrection(IProgress<RenderProgress>? progress, Stopwatch stopwatch, string message, RenderVerificationResult verification)
+    {
+        Trace.WriteLine(FormattableString.Invariant(
+            $"[SceneForge.Render] duration verification off by {verification.DurationDelta} (tolerance {verification.DurationTolerance}); {message}"));
+        progress?.Report(NonTimelineProgress(stopwatch, message));
     }
 
     // What one full render attempt (one strategy, one encoder, including any

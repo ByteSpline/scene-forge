@@ -117,4 +117,46 @@ public class RenderFilterGraphBuilderTests
             Assert.Contains("setsar=1/1", filter);
         });
     }
+
+    // Regression coverage for a real, measured bug distinct from (and not
+    // fixed by) RenderPlanBuilder's per-segment duration quantization:
+    // ffmpeg's fps filter (converting a segment's source frame rate to
+    // spec.FrameRate) duplicates/drops frames based on presentation
+    // timestamps, not on the trim window's exact requested duration, and
+    // can emit more frames than spec.FrameRate.ToFrameCount(segment.SourceDuration)
+    // calls for whenever the source's native rate differs from spec.FrameRate
+    // (verified directly against real ffmpeg 9.0.1: a 30fps source trimmed
+    // to a frame-exact-at-25fps duration and converted with fps=25/1 alone
+    // produced a consistent +1 frame per segment, and 60 such segments
+    // concatenated measured 488 actual frames against 470 expected - see
+    // RenderFilterGraphBuilder.BuildSegmentFilter's own remarks). A second,
+    // FRAME-domain trim (start_frame/end_frame, which counts actual output
+    // frames rather than reading timestamps) right after fps= forces every
+    // segment back to exactly its intended frame count regardless of the
+    // fps filter's own boundary behavior - this only asserts the graph
+    // carries that second trim in the right place; the real-ffmpeg,
+    // frame-rate-mismatched, at-scale proof lives in
+    // FFmpegRenderServiceIntegrationTests' three
+    // RenderAsync_RealFfmpegSourceFrameRateDiffersFromOutputFrameRate_*_VerifiesWithinTolerance
+    // tests (SinglePass/Batched/DistinctDedup).
+    [Fact]
+    public void Build_SegmentDuration_EmitsFrameDomainTrimRightAfterFpsPinningExactFrameCount()
+    {
+        var plan = CreatePlan([CreateSegment(0, 0, 0.28)]); // 0.28s @ 25fps = exactly 7 frames
+
+        var graph = RenderFilterGraphBuilder.Build(plan);
+
+        Assert.Contains("fps=25/1,trim=start_frame=0:end_frame=7,setpts=PTS-STARTPTS,format=yuv420p", graph);
+    }
+
+    [Fact]
+    public void Build_SeekedVideoConcat_AlsoEmitsFrameDomainTrimPinningExactFrameCount()
+    {
+        var segments = new[] { CreateSegment(0, 0, 0.28) };
+        var spec = new RenderOutputSpec { Width = 640, Height = 360, FrameRate = TwentyFiveFps, FitMode = AspectFitMode.Letterbox };
+
+        var graph = RenderFilterGraphBuilder.BuildSeekedVideoConcat(segments, spec, rotationDegrees: 0);
+
+        Assert.Contains("fps=25/1,trim=start_frame=0:end_frame=7,setpts=PTS-STARTPTS,format=yuv420p", graph);
+    }
 }

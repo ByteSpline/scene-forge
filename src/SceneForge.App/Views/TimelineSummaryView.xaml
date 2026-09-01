@@ -60,11 +60,28 @@
                         <Run Text=" / target " />
                         <Run Text="{Binding TargetDuration, Converter={StaticResource TimeSpanToClockStringConverter}, Mode=OneWay}" />
                     </TextBlock>
+                    <!-- A SignificantRepetition warning is purely informational -
+                         the target duration WAS matched (the green line below
+                         confirms it), and this text only explains why clips
+                         repeated. It is styled calmly (NoticeText / amber), not
+                         as an error. Only a genuine Shortfall - target duration
+                         not reached, FeasibilityWarningIsError true - is styled
+                         red. -->
                     <TextBlock Text="{Binding FeasibilityWarning}"
-                               Style="{StaticResource ErrorText}"
                                TextWrapping="Wrap"
                                Margin="0,8,0,0"
-                               Visibility="{Binding FeasibilityWarning, Converter={StaticResource NullToVisibilityConverter}}" />
+                               Visibility="{Binding FeasibilityWarning, Converter={StaticResource NullToVisibilityConverter}}">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock" BasedOn="{StaticResource NoticeText}">
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding FeasibilityWarningIsError}" Value="True">
+                                        <Setter Property="Foreground" Value="{DynamicResource Brush.Error}" />
+                                        <Setter Property="FontWeight" Value="SemiBold" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
                     <TextBlock Text="Exactly matches the requested audio duration."
                                Foreground="{DynamicResource Brush.Success}"
                                Margin="0,8,0,0"

@@ -37,9 +37,78 @@ public class TimelineSummaryViewModelTests
         Assert.NotNull(session.TimelinePlan);
         Assert.True(vm.IsComplete);
         Assert.Null(vm.FeasibilityWarning);
+        Assert.False(vm.FeasibilityWarningIsError);
         Assert.Equal(3, vm.Placements.Count);
         Assert.True(vm.ContinueCommand.CanExecute(null));
     }
+
+    [Fact]
+    public async Task BuildPlan_SignificantRepetitionWarning_ExposesMessageButNotAsError()
+    {
+        // SignificantRepetition means the target duration WAS matched - the
+        // message is informational context only, so the view must not style
+        // it as an error (FeasibilityWarningIsError stays false).
+        var session = BuildSessionWithReviewedClips();
+        var planner = new FakeTimelinePlanner
+        {
+            Result = PlanWithWarning(new TimelineFeasibilityWarning
+            {
+                Kind = TimelineFeasibilityWarningKind.SignificantRepetition,
+                Message = "Significant repetition was needed to match audio length.",
+                TargetDuration = TimeSpan.FromSeconds(6),
+                AchievedDuration = TimeSpan.FromSeconds(6),
+                Shortfall = TimeSpan.Zero,
+                RequestedMaximumReuseCount = 1,
+                EffectiveMaximumReuseCount = 10,
+            }),
+        };
+
+        var vm = new TimelineSummaryViewModel(session, planner, new WorkflowNavigator(), new FakeProjectPersistenceCoordinator());
+        await AwaitInFlightBuild(vm);
+
+        Assert.NotNull(vm.FeasibilityWarning);
+        Assert.False(vm.FeasibilityWarningIsError);
+    }
+
+    [Fact]
+    public async Task BuildPlan_ShortfallWarning_IsExposedAsError()
+    {
+        // Shortfall means the target duration was NOT reached - a genuine
+        // problem, so the view styles it red (FeasibilityWarningIsError true).
+        var session = BuildSessionWithReviewedClips();
+        var planner = new FakeTimelinePlanner
+        {
+            Result = PlanWithWarning(new TimelineFeasibilityWarning
+            {
+                Kind = TimelineFeasibilityWarningKind.Shortfall,
+                Message = "Only 3.50s is achievable (shortfall 2.50s).",
+                TargetDuration = TimeSpan.FromSeconds(6),
+                AchievedDuration = TimeSpan.FromSeconds(3.5),
+                Shortfall = TimeSpan.FromSeconds(2.5),
+                RequestedMaximumReuseCount = 1,
+                EffectiveMaximumReuseCount = 40,
+            }),
+        };
+
+        var vm = new TimelineSummaryViewModel(session, planner, new WorkflowNavigator(), new FakeProjectPersistenceCoordinator());
+        await AwaitInFlightBuild(vm);
+
+        Assert.NotNull(vm.FeasibilityWarning);
+        Assert.True(vm.FeasibilityWarningIsError);
+    }
+
+    private static TimelinePlan PlanWithWarning(TimelineFeasibilityWarning warning) => new()
+    {
+        Placements = [],
+        PlannedDuration = warning.AchievedDuration,
+        TargetDuration = warning.TargetDuration,
+        QuantizedTargetDuration = warning.TargetDuration,
+        TargetFrameCount = 0,
+        AudioDurationRoundingError = TimeSpan.Zero,
+        IsComplete = warning.Kind == TimelineFeasibilityWarningKind.SignificantRepetition,
+        DecisionTrace = [],
+        FeasibilityWarning = warning,
+    };
 
     [Fact]
     public async Task ReshuffleCommand_IncrementsSeedAndRebuildsPlanIntoSession()

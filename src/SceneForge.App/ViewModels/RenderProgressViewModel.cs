@@ -5,8 +5,10 @@ using CommunityToolkit.Mvvm.Input;
 using SceneForge.App.Navigation;
 using SceneForge.App.Persistence;
 using SceneForge.App.Session;
+using SceneForge.Core.Resources;
 using SceneForge.Infrastructure.Persistence;
 using SceneForge.Media.Rendering;
+using SceneForge.Media.Tooling;
 
 namespace SceneForge.App.ViewModels;
 
@@ -99,8 +101,16 @@ public sealed partial class RenderProgressViewModel : ObservableObject, IDisposa
         }
         catch (Exception ex) when (IsRecognizedRenderFailure(ex))
         {
-            ErrorMessage = ex.Message;
-            StatusText = "Render failed.";
+            // A duration-only verification miss never reaches here -
+            // FFmpegRenderService self-corrects it internally (see
+            // docs/RENDER_DURATION_SELF_CORRECTION.md). Anything that DOES
+            // reach here is a genuinely unrecoverable environment or
+            // content-integrity problem, so it is still shown - but as a
+            // calm, plain-language message rather than the raw exception
+            // text, per the product requirement that this screen must never
+            // look like a crash.
+            ErrorMessage = BuildFriendlyErrorMessage(ex);
+            StatusText = "We couldn't finish your render.";
         }
         finally
         {
@@ -119,9 +129,30 @@ public sealed partial class RenderProgressViewModel : ObservableObject, IDisposa
         RenderExecutionException or
         RenderVerificationException or
         RenderPlanException or
+        FfmpegToolsNotFoundException or
+        FfmpegToolsIncompatibleException or
         InvalidOperationException or
         IOException or
         UnauthorizedAccessException;
+
+    // Calm, non-technical, plain-language text for every recognized render
+    // failure - never the raw exception message (which can read like a
+    // crash: exit codes, ffmpeg stderr excerpts, stack-trace-adjacent
+    // phrasing). Each still explains what's wrong and what the user can do,
+    // per the product requirement that even a genuinely unrecoverable
+    // failure must not look like the app broke.
+    private static string BuildFriendlyErrorMessage(Exception ex) => ex switch
+    {
+        InsufficientDiskSpaceException => "There isn't enough free disk space to finish this render. Free up some space on your drive and try again.",
+        RenderVerificationException => "SceneForge couldn't produce a fully valid video from your files. This usually means there's a problem with the source video or audio - try re-importing your files, or choosing different ones, and render again.",
+        RenderExecutionException => "Something went wrong while creating your video. Please try rendering again - if this keeps happening, check that your video and audio files aren't corrupted, or restart SceneForge.",
+        RenderPlanException => "SceneForge couldn't prepare your video for rendering. Go back to Export Settings, double-check your choices, and try again.",
+        FfmpegToolsNotFoundException or FfmpegToolsIncompatibleException => "SceneForge's video engine couldn't be started. Try reinstalling the app; if that doesn't help, contact support.",
+        UnauthorizedAccessException => "SceneForge doesn't have permission to write to the selected output location. Choose a different folder and try again.",
+        IOException => "SceneForge couldn't read or write one of the files needed for this render. Check that your files aren't open in another program, then try again.",
+        InvalidOperationException => "Something isn't ready yet. Go back to Export Settings and try again.",
+        _ => "Something went wrong while creating your video. Please try again.",
+    };
 
     private static string FormatClock(TimeSpan value) =>
         value.Hours > 0

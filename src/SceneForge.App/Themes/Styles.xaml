@@ -117,6 +117,15 @@
         <Setter Property="FontWeight" Value="SemiBold" />
     </Style>
 
+    <!-- A calm, plain-language message about a genuinely unrecoverable
+         problem (e.g. render failure) - the amber Brush.Warning rather than
+         Brush.Error's red, so this reads as "here's what's wrong and what
+         to do" rather than as a crash. -->
+    <Style x:Key="NoticeText" TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+        <Setter Property="Foreground" Value="{DynamicResource Brush.Warning}" />
+        <Setter Property="TextWrapping" Value="Wrap" />
+    </Style>
+
     <!-- Big single-value readout used on the progress screens
          ("Transitions found", "Encoding speed", ...). -->
     <Style x:Key="MetricValue" TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">

@@ -29,4 +29,12 @@ public sealed record RenderResult
     // the render still succeeded; it is a record of the adaptive sizing the
     // service did to get there, not a failure.
     public IReadOnlyList<RenderBatchSplitEvent> BatchSplitEvents { get; init; } = [];
+
+    // Empty unless the output initially missed RenderOutputVerifier's
+    // duration tolerance and FFmpegRenderService had to self-correct - see
+    // RenderDurationCorrectionEvent. As with BatchSplitEvents, a non-empty
+    // list means the render still succeeded; it is a record of what the
+    // service did internally to get there, never a failure the caller needs
+    // to react to.
+    public IReadOnlyList<RenderDurationCorrectionEvent> DurationCorrections { get; init; } = [];
 }

@@ -83,6 +83,44 @@ public class ClipFrameMetricsPipelineTests
         }
     }
 
+    // Regression coverage for a real, shipped UI-freeze bug (see
+    // docs/UI_RESPONSIVENESS_AUDIT.md) - the Extraction analogue of
+    // SignalPipelineTests' own equivalent test (see its remarks for the
+    // full mechanism): ComputeAsync's internal `await foreach` used to omit
+    // ConfigureAwait(false), so a caller invoking it directly from a
+    // context-capturing thread (a WPF UI thread in production, via
+    // CleanClipExtractor) had every per-frame continuation marshaled back
+    // onto that thread instead of running on a thread-pool thread.
+    [Fact]
+    public async Task ComputeAsync_ConsumedFromAContextCapturingThread_NeverPostsPerFrameWorkBackToThatContext()
+    {
+        var spy = new SynchronizationContextSpy();
+        var original = SynchronizationContext.Current;
+        SynchronizationContext.SetSynchronizationContext(spy);
+        try
+        {
+            var frames = new[]
+            {
+                FrameSampleBuilder.SolidColor(10, 10, 10, frameIndex: 0, timestamp: TimeSpan.Zero),
+                FrameSampleBuilder.SolidColor(20, 20, 20, frameIndex: 1, timestamp: TimeSpan.FromMilliseconds(100)),
+            };
+
+            var results = new List<ClipFrameMetrics>();
+            await foreach (var metrics in ClipFrameMetricsPipeline.ComputeAsync(GenuinelyYieldingAsyncEnumerable(frames)).ConfigureAwait(false))
+            {
+                results.Add(metrics);
+            }
+
+            Assert.Equal(2, results.Count);
+            Assert.Equal(0, spy.PostCount);
+            Assert.Equal(0, spy.SendCount);
+        }
+        finally
+        {
+            SynchronizationContext.SetSynchronizationContext(original);
+        }
+    }
+
     private static async IAsyncEnumerable<FrameSample> ToAsyncEnumerable(IEnumerable<FrameSample> frames)
     {
         foreach (var frame in frames)
@@ -91,5 +129,22 @@ public class ClipFrameMetricsPipelineTests
         }
 
         await Task.CompletedTask;
+    }
+
+    // Unlike ToAsyncEnumerable above (synchronous yields, never exercises
+    // real context-capture behavior), forces a genuine asynchronous
+    // suspension before every frame via its own ConfigureAwait(false), so
+    // the suspension mechanism itself never touches whatever
+    // SynchronizationContext the test installed.
+    private static async IAsyncEnumerable<FrameSample> GenuinelyYieldingAsyncEnumerable(
+        IEnumerable<FrameSample> frames,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        foreach (var frame in frames)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await Task.Delay(1, cancellationToken).ConfigureAwait(false);
+            yield return frame;
+        }
     }
 }

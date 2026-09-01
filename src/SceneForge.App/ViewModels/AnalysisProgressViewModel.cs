@@ -97,12 +97,22 @@ public sealed partial class AnalysisProgressViewModel : ObservableObject, IDispo
             var detectionOptions = TransitionDetectionOptions.ForProfile(_session.AnalysisProfile);
             var detectionProgress = new Progress<TransitionDetectionProgress>(p =>
             {
+                // RawCandidatesSoFar is a live activity indicator, not a
+                // transition count - every classifier re-scans its sliding
+                // window on every sampled frame (see TransitionFuser's own
+                // remarks), so this grows into the thousands for any
+                // realistic-length video well before fusion collapses it
+                // into the real, deduplicated list. Used here only to show
+                // the run is progressing; TransitionsFound is corrected to
+                // the real count once DetectAsync returns below - see
+                // docs/DETECTION_REPORTING_AUDIT.md.
                 TransitionsFound = p.RawCandidatesSoFar;
                 StatusText = $"Detecting scene transitions... {FormatClock(p.LastSourceTimestamp)} analyzed";
             });
             var detections = await _transitionDetector.DetectAsync(videoPath, _session.VideoMediaInfo!, detectionOptions, detectionProgress, cancellationToken)
                 .ConfigureAwait(true);
             _session.Detections = detections;
+            TransitionsFound = detections.Count;
 
             var sceneRangeResult = SceneRangeCalculator.Calculate(_session.VideoMediaInfo!.Duration, detections);
             _session.SceneRangeResult = sceneRangeResult;

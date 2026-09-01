@@ -108,8 +108,19 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <StackPanel Grid.Row="0" Margin="0,0,0,16">
-            <TextBlock Text="Review candidate clips" Style="{StaticResource Heading1}" />
+           <StackPanel Grid.Row="0" Margin="0,0,0,16">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="Review candidate clips" Style="{StaticResource Heading1}" />
+                <Button Grid.Column="1"
+                        Content="Include all"
+                        Command="{Binding IncludeAllCommand}"
+                        VerticalAlignment="Center"
+                        AutomationProperties.Name="Include all clips" />
+            </Grid>
             <TextBlock Text="{Binding ErrorMessage}"
                        Style="{StaticResource ErrorText}"
                        Visibility="{Binding ErrorMessage, Converter={StaticResource NullToVisibilityConverter}}" />
@@ -128,7 +139,6 @@
         <ListView Grid.Row="1"
                   ItemsSource="{Binding Clips}"
                   AutomationProperties.Name="Candidate clip list" />
-
         <Button Grid.Row="2"
                 Content="Continue"
                 Command="{Binding ContinueCommand}"

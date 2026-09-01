@@ -225,18 +225,36 @@ public class RenderPlanBuilderTests
     }
 
     [Fact]
-    public void Build_MultipleNonFrameAlignedPlacements_PlannedVideoDurationIsSumOfQuantizedSegments()
+    public void Build_MultipleNonFrameAlignedPlacements_PlannedVideoDurationTracksCumulativeIdealTotal()
     {
-        // The actual regression this phase found: each segment quantizes
-        // independently (ffmpeg's trim filter has no knowledge of any
-        // other segment), so PlannedVideoDuration must be the sum of the
-        // ACTUAL quantized segment durations, not the raw
-        // TimelinePlan.PlannedDuration - otherwise the accumulated
-        // per-segment rounding grows with clip count (2 segments of 1/3s
-        // each previously produced a real 0.72s render verified against a
-        // 0.6667s "expected," failing by more than the verifier's 1-frame
-        // tolerance - reproduced via FFmpegRenderServiceIntegrationTests
-        // and directly against real ffmpeg outside SceneForge entirely).
+        // Superseded contract (see docs/OPTIMIZATION_REPORT.md's original
+        // investigation plus the later cumulative-apportionment fix): each
+        // segment used to be quantized INDEPENDENTLY against its own
+        // UsedDuration alone (1/3s -> nearest is 8 frames, every time), so
+        // two 1/3s segments summed to 16 frames even though the true
+        // continuous total (2/3s = 16.667 frames) is nearer 17. That is
+        // fine in isolation, but a fixed per-window rounding bias like
+        // this one MULTIPLIES instead of cancelling out once the same
+        // window repeats many times (DistinctDedup's own high-repetition
+        // path) or accumulates across a many-hundred-placement Batched
+        // plan - empirically measured (a real 19-clip/378-placement and a
+        // 420-clip/329-placement scenario, both with non-frame-aligned
+        // clip durations) at 33-67 FRAMES of drift between
+        // PlannedVideoDuration and TimelinePlan.PlannedDuration (the audio
+        // track's own trim length - see RenderAudioTrackSpec.TrimDuration),
+        // dozens of times past the verifier's one-frame tolerance.
+        //
+        // RenderPlanBuilder now tracks the cumulative IDEAL (continuous)
+        // duration and the cumulative frame count already committed, in
+        // Position order, and assigns each placement only the frame DELTA
+        // needed to keep the running total exact - the standard "largest
+        // remainder"/Bresenham apportionment technique. The first
+        // segment's own quantization is unchanged (nothing has accumulated
+        // yet), but the second now absorbs the running fractional
+        // remainder (2/3s's own nearest frame count, 17, minus the 8
+        // already committed = 9), so the total always matches
+        // TwentyFiveFps.ToFrameCount(sum of raw UsedDuration) exactly
+        // instead of drifting further apart as more placements are added.
         var placements = new[]
         {
             TimelinePlanBuilder.CreatePlacement(0, 0, sourceStartSeconds: 0, sourceDurationSeconds: 1.0 / 3.0),
@@ -246,10 +264,34 @@ public class RenderPlanBuilderTests
 
         var plan = _builder.Build(request);
 
-        var expectedPerSegment = TwentyFiveFps.FromFrameCount(8);
-        Assert.Equal(expectedPerSegment, plan.Segments[0].SourceDuration);
-        Assert.Equal(expectedPerSegment, plan.Segments[1].SourceDuration);
-        Assert.Equal(TwentyFiveFps.FromFrameCount(16), plan.PlannedVideoDuration);
+        Assert.Equal(TwentyFiveFps.FromFrameCount(8), plan.Segments[0].SourceDuration);
+        Assert.Equal(TwentyFiveFps.FromFrameCount(9), plan.Segments[1].SourceDuration);
+        Assert.Equal(TwentyFiveFps.FromFrameCount(17), plan.PlannedVideoDuration);
+    }
+
+    [Fact]
+    public void Build_RepeatedIdenticalWindow_CumulativeApportionmentBoundsAggregateDriftToUnderOneFrame()
+    {
+        // The scenario the cumulative fix directly targets: the SAME
+        // (SourceStart, UsedDuration) window placed many times in a row
+        // (DistinctDedup's own high-repetition shape). Independent
+        // per-placement rounding would apply the SAME fixed bias every
+        // time (1/3s always rounds to 8 frames alone), so the aggregate
+        // error would grow linearly with the repeat count - 30 repeats of
+        // a ~0.667-frame-per-segment undershoot would be roughly 20 frames
+        // off. Cumulative apportionment instead keeps the running total
+        // within one frame of the true continuous total at every prefix,
+        // regardless of how many times the window repeats.
+        var placements = Enumerable.Range(0, 30)
+            .Select(i => TimelinePlanBuilder.CreatePlacement(i, 0, sourceStartSeconds: 0, sourceDurationSeconds: 1.0 / 3.0))
+            .ToArray();
+        var request = CreateRequest(placements, audio: CreateAudioSpec(durationSeconds: 15));
+
+        var plan = _builder.Build(request);
+
+        var trueContinuousTotal = TimeSpan.FromSeconds(30.0 / 3.0);
+        var delta = (plan.PlannedVideoDuration - trueContinuousTotal).Duration();
+        Assert.True(delta <= TwentyFiveFps.FromFrameCount(1), $"expected drift within one frame, got {delta}");
     }
 
     [Fact]

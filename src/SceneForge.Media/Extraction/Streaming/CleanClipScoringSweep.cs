@@ -34,7 +34,12 @@ internal static class CleanClipScoringSweep
         var openAccumulators = new List<CandidateAccumulator>();
         var nextCandidateIndex = 0;
 
-        await foreach (var metrics in metricsStream.WithCancellation(cancellationToken))
+        // ConfigureAwait(false) required, not optional - see
+        // Detection.Signals.SignalPipeline.ComputeAsync's own remarks and
+        // docs/UI_RESPONSIVENESS_AUDIT.md: without it, a UI-thread caller
+        // has every per-frame continuation below marshaled back onto the
+        // UI dispatcher instead of a thread-pool thread.
+        await foreach (var metrics in metricsStream.WithCancellation(cancellationToken).ConfigureAwait(false))
         {
             cancellationToken.ThrowIfCancellationRequested();
 

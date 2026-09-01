@@ -63,6 +63,13 @@ public sealed partial class TimelineSummaryViewModel : ObservableObject, IDispos
     [ObservableProperty]
     private string? feasibilityWarning;
 
+    // True only for a genuine Shortfall (target duration NOT reached), which
+    // the view styles as an error. A SignificantRepetition warning leaves
+    // this false: the target WAS matched, so that message is purely
+    // informational context and is styled calmly, not as a failure.
+    [ObservableProperty]
+    private bool feasibilityWarningIsError;
+
     [ObservableProperty]
     private int seed;
 
@@ -145,6 +152,7 @@ public sealed partial class TimelineSummaryViewModel : ObservableObject, IDispos
             TargetDuration = plan.QuantizedTargetDuration;
             IsComplete = plan.IsComplete;
             FeasibilityWarning = plan.FeasibilityWarning?.Message;
+            FeasibilityWarningIsError = plan.FeasibilityWarning?.Kind == TimelineFeasibilityWarningKind.Shortfall;
         }
         catch (OperationCanceledException)
         {

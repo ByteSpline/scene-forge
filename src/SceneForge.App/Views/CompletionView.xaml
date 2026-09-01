@@ -18,8 +18,11 @@
                     <Run Text="Encoder: " />
                     <Run Text="{Binding EncoderDescription, Mode=OneWay}" />
                 </TextBlock>
+                <!-- Not an error: the render completed successfully, just via
+                     the software encoder. Styled calmly (NoticeText / amber)
+                     as informational context, not as a failure. -->
                 <TextBlock Text="This render fell back to the software encoder after the hardware encoder failed mid-render."
-                           Style="{StaticResource ErrorText}"
+                           Style="{StaticResource NoticeText}"
                            TextWrapping="Wrap"
                            Margin="0,4,0,0"
                            Visibility="{Binding FellBackToSoftwareEncoder, Converter={StaticResource NullToVisibilityConverter}}" />

@@ -255,6 +255,74 @@ public class CleanClipExtractorTests
         Assert.Equal(0, ffprobe.ProbeCallCount);
     }
 
+    // Regression coverage for a real, shipped UI-freeze bug (see
+    // docs/UI_RESPONSIVENESS_AUDIT.md) - exercises the whole ExtractAsync
+    // pipeline (ClipFrameMetricsPipeline, CleanClipScoringSweep, and
+    // WithProgress, all previously missing ConfigureAwait(false) on their
+    // internal `await foreach`) end to end from a context-capturing thread,
+    // the same way AnalysisProgressViewModel invokes it in production.
+    // Feeds frames through a sampler that genuinely suspends between each
+    // one (via its own ConfigureAwait(false), so the suspension mechanism
+    // itself never touches the spy) and asserts not one continuation -
+    // across the whole call - was ever posted back to it.
+    [Fact]
+    public async Task ExtractAsync_ConsumedFromAContextCapturingThread_NeverPostsPerFrameWorkBackToThatContext()
+    {
+        var spy = new SynchronizationContextSpy();
+        var original = SynchronizationContext.Current;
+        SynchronizationContext.SetSynchronizationContext(spy);
+        try
+        {
+            var frames = BuildFrames(0.0, 10.0, 0.25, (128, 128, 128));
+            var sampler = new FakeFrameSampler((_, _, cancellationToken) => GenuinelyYieldingAsyncEnumerable(frames, cancellationToken));
+            var ffprobe = FakeFfprobeService.ReturningMediaInfo(CreateMediaInfo(TimeSpan.FromSeconds(10)));
+            var extractor = new CleanClipExtractor(sampler, ffprobe);
+
+            var options = new CleanClipExtractionOptions
+            {
+                SamplingOptions = FrameSamplingOptions.ForProfile(AnalysisProfile.Fast),
+                SceneRanges = [new TimeRange(TimeSpan.Zero, TimeSpan.FromSeconds(10))],
+                Scoring = LenientScoring,
+            };
+
+            // ConfigureAwait(false) here is deliberate and required for the
+            // test itself to be valid, not a style violation (xUnit1030) -
+            // without it, THIS await's own resumption (running the
+            // assertions below) would be posted through the spy, which
+            // would make the spy.PostCount assertion below fail regardless
+            // of whether the pipeline under test is fixed.
+#pragma warning disable xUnit1030
+            var result = await extractor.ExtractAsync("input.mp4", options, progress: null, CancellationToken.None).ConfigureAwait(false);
+#pragma warning restore xUnit1030
+
+            Assert.NotEmpty(result.AcceptedClips);
+            // No IProgress<T> supplied, so every Post the spy might see here
+            // can only come from the extraction pipeline's own internal
+            // continuations - not from Progress<T>'s own (separate,
+            // legitimate) UI-thread marshaling, which a real caller like
+            // AnalysisProgressViewModel does rely on and this test
+            // deliberately does not exercise.
+            Assert.Equal(0, spy.PostCount);
+            Assert.Equal(0, spy.SendCount);
+        }
+        finally
+        {
+            SynchronizationContext.SetSynchronizationContext(original);
+        }
+    }
+
+    private static async IAsyncEnumerable<FrameSample> GenuinelyYieldingAsyncEnumerable(
+        IEnumerable<FrameSample> frames,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        foreach (var frame in frames)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await Task.Delay(1, cancellationToken).ConfigureAwait(false);
+            yield return frame;
+        }
+    }
+
     private static List<FrameSample> BuildFrames(double startSeconds, double endSeconds, double stepSeconds, (byte B, byte G, byte R) color)
     {
         var frames = new List<FrameSample>();

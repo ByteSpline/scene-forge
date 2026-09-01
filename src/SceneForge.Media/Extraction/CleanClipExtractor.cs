@@ -149,7 +149,14 @@ public sealed class CleanClipExtractor : ICleanClipExtractor
         Action<ClipFrameMetrics> onFrame,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        await foreach (var frame in source.WithCancellation(cancellationToken))
+        // ConfigureAwait(false) required, not optional - see
+        // Detection.Signals.SignalPipeline.ComputeAsync's own remarks and
+        // docs/UI_RESPONSIVENESS_AUDIT.md: without it, a UI-thread caller
+        // has this continuation (and everything upstream feeding it, since
+        // this is the outermost wrapper around the whole metrics stream)
+        // marshaled back onto the UI dispatcher instead of a thread-pool
+        // thread.
+        await foreach (var frame in source.WithCancellation(cancellationToken).ConfigureAwait(false))
         {
             onFrame(frame);
             yield return frame;

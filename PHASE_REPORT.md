@@ -957,3 +957,194 @@ portable ZIP was rebuilt from scratch and re-audited (17 runtime-only
 files, `Verify-PortableBuild.ps1` PASS). Full suite 699/699 in Release;
 build and format clean. `docs/UI_POLISH_REPORT.md` is updated alongside
 this review.
+
+## Phase 18 review — 2026-09-01
+
+Date: 2026-09-01
+
+### Scope
+
+Strict release review of branch `18-clean-clip-retention-and-fixes` — the
+committed fix bundle at `2d9ca95` ("Fix: transition detection regression,
+UI responsiveness during analysis, render duration drift, clean clip
+retention improvements", one commit ahead of `main`) **plus the substantial
+uncommitted working-tree work on top of it** (render duration
+self-correction + calm render-failure messaging + an
+informational-message-styling pass) — against [CLAUDE.md](CLAUDE.md),
+[docs/ARCHITECTURE_DECISIONS.md](docs/ARCHITECTURE_DECISIONS.md), and the
+phase's own five audit/design documents:
+[CLEAN_CLIP_RETENTION_AUDIT.md](docs/CLEAN_CLIP_RETENTION_AUDIT.md),
+[RENDER_DURATION_DRIFT_AUDIT.md](docs/RENDER_DURATION_DRIFT_AUDIT.md),
+[UI_RESPONSIVENESS_AUDIT.md](docs/UI_RESPONSIVENESS_AUDIT.md),
+[DETECTION_REPORTING_AUDIT.md](docs/DETECTION_REPORTING_AUDIT.md),
+[RENDER_DURATION_SELF_CORRECTION.md](docs/RENDER_DURATION_SELF_CORRECTION.md),
+and [INFORMATIONAL_MESSAGE_STYLING.md](docs/INFORMATIONAL_MESSAGE_STYLING.md).
+Every report was treated as a claim to verify: the actual `git show 2d9ca95`
+diff, the uncommitted `git diff`, every new/changed test, and the accuracy
+regression gate were inspected and re-run independently rather than trusting
+the narratives.
+
+### Commands executed and results
+
+```text
+git show 2d9ca95 --stat / git diff --stat / git diff main --stat
+  -> committed bundle = 27 files (+1908/-62); uncommitted on top = render
+     self-correction + calm messaging + styling (2 new src files, 1 new
+     test file, 3 new docs)
+
+dotnet build SceneForge.sln -c Debug            -> Build succeeded, 0 Warning(s), 0 Error(s)
+dotnet build SceneForge.sln -c Release          -> Build succeeded, 0 Warning(s), 0 Error(s)
+   (Release first failed with MSB3021/MSB3027 file-copy errors: a leftover
+    SceneForge.App.exe, PID 10320, started 03:45 from bin/Release, was
+    locking SceneForge.Media.dll / SceneForge.Core.dll in the App output
+    dir. Closed with the user's approval; Release then built clean.)
+
+dotnet test SceneForge.sln -c Debug   --no-build -> 737/737 passed, 0 skipped
+dotnet test SceneForge.sln -c Release --no-build -> 737/737 passed, 0 skipped
+   (Core 8, Accuracy 31, Infrastructure 46, App 84, Media 568)
+
+dotnet format SceneForge.sln --verify-no-changes -> clean, no diff
+
+dotnet run --project accuracy/SceneForge.Accuracy -c Debug -- gate \
+  --baseline accuracy/SceneForge.Accuracy/Baselines/regression-baseline.json
+  -> Regression gate: PASSED (no correctness regression vs. baseline).
+     AGGREGATE Recall 46% / Precision 39% / F1 42% / BoundaryErr 148.6ms /
+     FP-per-min 10.62 — byte-identical, per fixture group, to the committed
+     baseline. Perf notes informational only (peak managed mem +5.0%,
+     working set +5.8%, throughput +20.6% — none gate CI).
+
+dotnet build benchmarks/SceneForge.Benchmarks -c Release -> Build succeeded, 0 Warning(s), 0 Error(s)
+```
+
+**Relevant benchmarks:** no BenchmarkDotNet suite was re-run. This bundle
+contains no *optimization* (CLAUDE.md rule 9's trigger) — the clean-clip
+threshold change, the render-drift apportionment/frame-trim fixes, the four
+`ConfigureAwait(false)` fixes, the raw-vs-fused count fix, and the new
+duration self-correction layer are all correctness/feature changes, each
+covered test-first per rule 8. This matches the Phase 16 review's own
+reasoning for the same situation. The accuracy gate's throughput/memory
+figures above are the standing performance evidence and show no regression.
+
+### Review outcome
+
+#### Blockers
+
+None. Every headline claim was independently confirmed:
+
+- **Detection is genuinely unchanged** (DETECTION_REPORTING_AUDIT) — the
+  accuracy regression gate passes with metrics byte-identical to the
+  committed baseline; `git show 2d9ca95` touches no file under
+  `Detection/Classification/`, `Detection/Fusion/`, `TransitionDetector.cs`,
+  or `TransitionDetectionProfile.cs`. The fix is purely
+  `AnalysisProgressViewModel` correcting its "Transitions found" label from
+  the raw pre-fusion candidate count to `detections.Count` once
+  `DetectAsync` returns — the same "correct the live estimate" pattern the
+  method already used for `ClipsAccepted`/`ClipsRejected`.
+- **The four `ConfigureAwait(false)` fixes** (UI_RESPONSIVENESS_AUDIT) are
+  minimal, correctly placed on the `.WithCancellation(...)` awaits in the
+  four per-frame streaming loops, and backed by `SynchronizationContextSpy`
+  regression tests that each fail against the reverted code.
+- **RenderPlanBuilder's cumulative (Bresenham) frame apportionment** and
+  **RenderFilterGraphBuilder's post-`fps=` frame-domain trim**
+  (RENDER_DURATION_DRIFT_AUDIT) fix real, measured aggregate drift by making
+  the render match the plan — not by widening `RenderOutputVerifier`'s
+  one-frame tolerance, which is unchanged (rule 10 honored). Real-ffmpeg
+  integration tests cover all three render strategies at realistic scale.
+- **The clean-clip threshold change** (`TransitionSafeDistance` 2.0s→0.5s,
+  `MinClipDuration` 3.0s→2.0s) is defaults-only, leaves
+  `IntervalSubtractor`'s hard contamination-exclusion guarantee untouched,
+  and is justified against this repo's own measured 0.5s synthetic
+  transition width. The real-ffmpeg retention test confirms no accepted or
+  rejected clip ever overlaps a real transition zone under either config.
+- **The three-tier duration self-correction loop** is bounded to exactly
+  three named tiers (no recursion, no `while`), re-verifies between tiers,
+  stops early on success or on a non-duration-only failure, threads
+  `CancellationToken` through every await, records every tier taken on
+  `RenderResult.DurationCorrections` + `Trace`, and is covered by a theory
+  over `IsDurationOnlyFailure`'s flag boundaries plus five `RenderAsync`
+  scenarios including all-tiers-exhausted-then-throws (proving termination)
+  and a real-ffmpeg tier-3 test driven by a deliberately-wrong planned
+  duration.
+
+#### Major issues (found, fixed in this review)
+
+1. **`RenderDurationCorrector.CorrectAsync`'s output-file swap could lose an
+   already-valid render on a transient I/O failure.** The swap was
+   `File.Delete(outputFilePath)` immediately followed by
+   `File.Move(correctedPath, outputFilePath)` — non-atomic, with a window in
+   which *neither* file exists. If the `File.Move` failed after the
+   `File.Delete` succeeded (a transient scanner/indexer/thumbnail-handler
+   handle race on the output path is a well-known Windows failure mode), the
+   user was left with no output at all, and the `finally` block's
+   unconditional `TryDeleteFile(correctedPath)` then removed the last
+   remaining copy — directly contradicting the feature's own stated
+   guarantee that "a valid render must never end in failure". The tier-3
+   remux output is otherwise content-valid (`IsDurationOnlyFailure` already
+   established video/audio streams present and all endpoint frames
+   decodable — only the length was off).
+
+   **Fixed**: replaced the delete+move with a single-call
+   `File.Move(correctedPath, outputFilePath, overwrite: true)`
+   (`MOVEFILE_REPLACE_EXISTING`) — there is no longer any moment where the
+   output path is missing, and if the replace itself fails the original
+   render stays in place (its duration slightly off, but a real file the
+   user can use) rather than being destroyed. New regression test
+   `RenderDurationCorrectorTests.CorrectAsync_TheFileSwapItselfFails_LeavesTheAlreadyValidRenderInPlaceRatherThanLosingBothCopies`
+   holds the corrected copy open with `FileShare.None` to force a
+   deterministic swap failure and asserts the original output survives with
+   its bytes intact; verified to **fail** against the old delete+move code
+   ("the already-valid render must survive a failed swap") and pass against
+   the fix.
+
+#### Minor issues
+
+| # | Issue | Disposition |
+|---|---|---|
+| 1 | `SceneReviewViewModel.IncludeAll` — a new `[RelayCommand]` + "Include all" button added in `2d9ca95` — shipped with **no test** and is not mentioned in any of the four audit docs. | **Test added** (`SceneReviewViewModelTests.IncludeAllCommand_MarksEveryClipIncluded_AndPersistsTheOverrides`). |
+| 2 | Commit `2d9ca95` left malformed indentation in `SceneReviewViewModel.cs` (the `[RelayCommand]` attribute indented 8 spaces, a trailing-whitespace line) — so `dotnet format --verify-no-changes` would have failed at that commit (Decision 8 / rule 13). | **Already corrected in the working tree** (uncommitted). Noted that the commit itself was not format-clean. |
+| 3 | The uncommitted work moves `stopwatch.Stop()` to after verification + correction, so `RenderResult.Elapsed` now includes verification time (previously it stopped right after the render). | **Left as-is** — arguably more accurate (the user waits through verification too); no test asserts the real value; the completion screen's "Total render time" is informational. |
+| 4 | Tier 3's `tpad=stop_mode=clone:stop_duration=<full target duration>` clones trailing frames for the *entire* target length before the frame-domain trim cuts back — e.g. ~22 min of trailing-frame filtering for a 22-min video. Guaranteed-effective and "time is not a concern", but a few frames of headroom would suffice. | **Left as-is**, disclosed. A safe over-approximation, and tier 3 is rare by design. |
+| 5 | `RenderPlanBuilder`'s cumulative apportionment can trip the pre-existing `frameCount <= 0` → `RenderPlanException` guard for a sub-frame *trimmed final* placement in a marginally wider set of cumulative-phase alignments than the old independent rounding did (both throw below ~0.5 frame; the new code can throw up to ~1 frame for that last segment at an unlucky phase). | **Left as-is** — astronomically rare (a <10–40 ms final trim), the guard is tested (`Build_PlacementQuantizesToZeroFrames_ThrowsRenderPlanException`), and it now surfaces as a calm message, not a crash. |
+| 6 | No test targets cancellation *during* the three-tier correction loop specifically (the token is threaded through; the ViewModel-level cancel test exists and the loop structure mirrors the main render path). | **Left as-is** — minor coverage gap, low risk. |
+
+#### Risk-category checklist
+
+| Category | Finding |
+|---|---|
+| Web dependencies | None. `grep` of the entire diff (committed + uncommitted) for `HttpClient`/`WebClient`/`Socket`/`http(s)://`/`Telemetry`/`Analytics` — zero hits. No new package reference. |
+| Unbounded memory / concurrency | None. The correction loop is exactly three named tiers — no recursion, no `while`, no fan-out. No new `Task.Run`/`Thread`/`Channel`/`Parallel`/`.Result`/`.Wait()` anywhere in the diff. |
+| UI-thread work | The four `ConfigureAwait(false)` fixes are the correct remedy for the reported analysis freeze (proven by `SynchronizationContextSpy` tests). The detection-count fix, the self-correction progress reports, and the styling changes are trivial UI-thread property sets / `IProgress<T>.Report` calls. |
+| Unsafe process invocation | `RenderDurationCorrector` uses the hardened `ProcessRunner` (`UseShellExecute=false`, discrete `ArgumentList`, `CreateNoWindow=true`). Filter strings built via `FormattableString.Invariant`; the output path is a separate argv entry (`-i <path>`), never string-concatenated — no injection surface. |
+| Timing drift | Both render-drift fixes make the actual output match `RenderPlan.PlannedVideoDuration` more precisely; the verifier's one-frame tolerance and duration source are unchanged. Tier-3 remux is frame-domain-exact on video, `atrim=duration=` on audio. |
+| Silent fallback | The self-correction is explicitly recorded (`RenderResult.DurationCorrections`, one `RenderDurationCorrectionEvent` per tier) + `Trace.WriteLine` per tier + a progress message; a non-empty list means success, documented as such. HW→SW encoder fallback still surfaces via `FellBackToSoftwareEncoder`, shown on the completion screen. |
+| Missing cancellation | `CancellationToken` threaded through every `await` in the new code, including all three tiers and `RenderDurationCorrector.CorrectAsync`. |
+| Unverifiable claims | The accuracy gate was re-run (PASSED, byte-identical to baseline), confirming "detection unchanged". The drift and UI-responsiveness audits document per-fix revert-verification of their new tests; the tier-3 real-ffmpeg test is in the suite and passes. This review re-ran build/test in **both** Debug and Release. |
+| Packaging omissions | N/A — the bundle touches no file under `packaging/` or `.github/`. |
+
+### Fixes applied in this review
+
+- `src/SceneForge.Media/Rendering/Internal/RenderDurationCorrector.cs` — the
+  output swap is now a single `File.Move(..., overwrite: true)` instead of
+  `File.Delete` + `File.Move` (Major issue 1).
+- `tests/SceneForge.Media.Tests/Rendering/RenderDurationCorrectorTests.cs` —
+  new `CorrectAsync_TheFileSwapItselfFails_...` regression test, verified to
+  catch the old behavior.
+- `tests/SceneForge.App.Tests/ViewModels/SceneReviewViewModelTests.cs` —
+  new `IncludeAllCommand_...` test for the previously-untested new command
+  (Minor issue 1).
+- `docs/RENDER_DURATION_SELF_CORRECTION.md` — documented the swap fix and
+  the added test.
+
+### Conclusion
+
+No blockers. One confirmed major issue — a duration-correction pass that
+could, on a transient file-system race, destroy an otherwise-valid render
+while failing, defeating the very guarantee it exists to provide — was
+found by tracing the tier-3 file swap rather than trusting the "guaranteed
+effective" description, fixed with a single atomic replace, and locked in
+with a regression test proven to catch the old behavior. Two missing tests
+were added. Build (Debug + Release), the full suite (737/737 in Debug and
+Release), `dotnet format`, and the accuracy regression gate (byte-identical
+to baseline) all pass. The four audit documents' central claims were each
+independently reproduced, not trusted. The uncommitted work remains
+uncommitted — this review did not commit or push anything.

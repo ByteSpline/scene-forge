@@ -5,6 +5,7 @@ using SceneForge.App.ViewModels;
 using SceneForge.Infrastructure.Persistence;
 using SceneForge.Media.Domain;
 using SceneForge.Media.Rendering;
+using SceneForge.Media.Tooling;
 
 namespace SceneForge.App.Tests.ViewModels;
 
@@ -31,21 +32,83 @@ public class RenderProgressViewModelTests
     }
 
     [Fact]
-    public void Construction_RenderThrowsRecognizedFailure_SetsErrorMessageAndDoesNotNavigate()
+    public void Construction_RenderThrowsRecognizedFailure_SetsACalmNonTechnicalErrorMessageAndDoesNotNavigate()
     {
         var session = BuildSessionWithRenderPlan();
         var renderService = new FakeFFmpegRenderService
         {
-            ExceptionToThrow = new RenderExecutionException("hardware and software encoders both failed"),
+            ExceptionToThrow = new RenderExecutionException("ffmpeg render with encoder 'libx264' failed (exit code 1): stderr garbage"),
         };
         var navigator = new WorkflowNavigator();
 
         var vm = new RenderProgressViewModel(session, renderService, navigator, new FakeProjectPersistenceCoordinator());
 
         Assert.False(vm.IsRunning);
-        Assert.Equal("hardware and software encoders both failed", vm.ErrorMessage);
+        // A genuinely unrecoverable failure still reaches the user, but as
+        // calm, plain-language text - never the raw exception message
+        // (exit codes / stderr excerpts), per the product requirement that
+        // this screen must never look like a crash.
+        Assert.NotNull(vm.ErrorMessage);
+        Assert.DoesNotContain("exit code", vm.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("stderr", vm.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("We couldn't finish your render.", vm.StatusText);
         Assert.Null(session.RenderResult);
         Assert.Equal(WorkflowStep.WelcomeImport, navigator.CurrentStep);
+    }
+
+    [Theory]
+    [InlineData(typeof(FfmpegToolsMissingFake))]
+    [InlineData(typeof(FfmpegToolsIncompatibleFake))]
+    public void Construction_RenderThrowsToolLocatorFailure_IsRecognizedAndShowsACalmMessage_NotAnUnhandledCrash(Type exceptionFactoryType)
+    {
+        // Regression coverage: FfmpegToolsNotFoundException/
+        // FfmpegToolsIncompatibleException were previously NOT in
+        // IsRecognizedRenderFailure's type list, so they propagated past
+        // this ViewModel entirely - an unhandled crash, which is strictly
+        // worse than the red "Render failed" screen this whole change is
+        // about avoiding.
+        var factory = (IExceptionFactory)Activator.CreateInstance(exceptionFactoryType)!;
+        var session = BuildSessionWithRenderPlan();
+        var renderService = new FakeFFmpegRenderService { ExceptionToThrow = factory.Create() };
+        var navigator = new WorkflowNavigator();
+
+        var vm = new RenderProgressViewModel(session, renderService, navigator, new FakeProjectPersistenceCoordinator());
+
+        Assert.False(vm.IsRunning);
+        Assert.NotNull(vm.ErrorMessage);
+        Assert.Equal(WorkflowStep.WelcomeImport, navigator.CurrentStep);
+    }
+
+    private interface IExceptionFactory
+    {
+        Exception Create();
+    }
+
+    private sealed class FfmpegToolsMissingFake : IExceptionFactory
+    {
+        public Exception Create() => new FfmpegToolsNotFoundException(["ffmpeg.exe"]);
+    }
+
+    private sealed class FfmpegToolsIncompatibleFake : IExceptionFactory
+    {
+        public Exception Create() => new FfmpegToolsIncompatibleException("ffmpeg.exe", "unexpected banner");
+    }
+
+    [Fact]
+    public void Construction_RenderThrowsInsufficientDiskSpace_MentionsDiskSpaceWithoutRawByteCounts()
+    {
+        var session = BuildSessionWithRenderPlan();
+        var renderService = new FakeFFmpegRenderService
+        {
+            ExceptionToThrow = new SceneForge.Core.Resources.InsufficientDiskSpaceException(@"C:\out", 500_000_000, 10_000),
+        };
+        var navigator = new WorkflowNavigator();
+
+        var vm = new RenderProgressViewModel(session, renderService, navigator, new FakeProjectPersistenceCoordinator());
+
+        Assert.NotNull(vm.ErrorMessage);
+        Assert.Contains("disk space", vm.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("500", vm.ErrorMessage);
     }
 
     [Fact]

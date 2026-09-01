@@ -57,45 +57,80 @@ public sealed class RenderPlanBuilder : IRenderPlanBuilder
         }
 
         var frameRate = request.OutputSpec.FrameRate;
-        var segments = new List<RenderSegment>(plan.Placements.Count);
-        var plannedVideoDuration = TimeSpan.Zero;
-        foreach (var placement in plan.Placements)
+        var orderedPlacements = plan.Placements.OrderBy(p => p.Position).ToList();
+        var segments = new List<RenderSegment>(orderedPlacements.Count);
+
+        // ffmpeg's trim filter keeps every source frame whose presentation
+        // time falls within [start, start+duration) - for a duration that
+        // is not an exact multiple of the frame period, the last frame
+        // that starts inside that window is kept in full even though the
+        // window's nominal end falls partway through that frame's own
+        // display period, so an unquantized duration handed straight to
+        // ffmpeg gets whatever frame count happens to overlap the window,
+        // not a value SceneForge chose (verified directly against real
+        // ffmpeg: this is deterministic filter behavior, not an
+        // encoder/version-specific quirk) - every segment duration below
+        // is therefore quantized to a whole number of frames before it is
+        // ever used as a trim=duration= argument (see
+        // docs/OPTIMIZATION_REPORT.md's investigation).
+        //
+        // Quantizing each placement's OWN duration independently
+        // (MidpointRounding.AwayFromZero against that placement's
+        // UsedDuration alone, the original fix) bounds any ONE segment's
+        // error to half a frame, but says nothing about the SUM: repeat
+        // the same slightly-long clip through DistinctDedup's own
+        // high-repetition path and a fixed per-clip rounding bias
+        // multiplies by the repeat count instead of cancelling out, and
+        // even without repetition a many-hundred-placement Batched plan
+        // sees the summed error grow with placement count via ordinary
+        // random-walk accumulation - either way, the sum of independently-
+        // quantized segments can end up several frames away from
+        // TimelinePlan.PlannedDuration (what RenderAudioTrackSpec.TrimDuration
+        // is normally set to - see that type's own remarks), even though
+        // no single segment is individually wrong, and the gap grows with
+        // scale rather than staying fixed - exactly why this surfaced
+        // differently (and independently) on SinglePass, DistinctDedup,
+        // and Batched as each was built, instead of being caught once.
+        //
+        // The fix is the standard "largest remainder"/Bresenham
+        // apportionment technique: track the cumulative IDEAL (continuous,
+        // un-quantized) duration and the cumulative frame count already
+        // committed to segments, in placement-Position order, and assign
+        // each placement only the DELTA of frames needed to bring the
+        // running total's rounded frame count back in line. This bounds
+        // the error at every prefix - not just the grand total - to under
+        // one frame, by construction, regardless of placement count or
+        // repetition pattern, so PlannedVideoDuration (the final
+        // cumulative frame count converted back to a duration, below)
+        // always agrees with TimelinePlan.PlannedDuration to within a
+        // single frame at the render's own frame rate, no matter how many
+        // segments or how much repetition the plan has.
+        //
+        // A byte-identical repeated window can still land on two (rarely
+        // three) different quantized durations depending on where it
+        // falls in the running phase, rather than always the exact same
+        // one - CountDistinctSegments/RenderDistinctDedupStageAAsync
+        // already key pre-render pieces by (SourceStart, SourceDuration),
+        // so this is handled automatically and just turns into at most
+        // ~2-3x as many pre-render pieces for a given distinct-window
+        // count (still far below MaxDistinctDedupPieces / the total
+        // segment count for any realistic high-repetition plan), never an
+        // unbounded per-occurrence explosion.
+        var cumulativeIdealDuration = TimeSpan.Zero;
+        var cumulativeFrameCount = 0L;
+
+        foreach (var placement in orderedPlacements)
         {
-            // ffmpeg's trim filter keeps every source frame whose
-            // presentation time falls within [start, start+duration) - for
-            // a duration that is not an exact multiple of the frame
-            // period, the last frame that starts inside that window is
-            // kept in full even though the window's nominal end falls
-            // partway through that frame's own display period, so an
-            // unquantized duration handed straight to ffmpeg gets whatever
-            // frame count happens to overlap the window, not a value
-            // SceneForge chose (verified directly against real ffmpeg:
-            // this is deterministic filter behavior, not an
-            // encoder/version-specific quirk). Rounding to the NEAREST
-            // whole frame here - which may land above or below the
-            // original duration, unlike trim's own always-keep-the-
-            // overlapping-frame behavior - produces a duration that IS an
-            // exact multiple of the frame period, and a trim window whose
-            // width is an exact multiple of the frame period always
-            // produces exactly that many frames regardless of phase
-            // (verified directly against real ffmpeg across multiple
-            // segment counts) - so both this segment's actual rendered
-            // frame count and PlannedVideoDuration (the running sum below)
-            // are guaranteed to agree with what ffmpeg will actually
-            // produce, instead of silently drifting further apart with
-            // every additional segment (see docs/OPTIMIZATION_REPORT.md's
-            // investigation - this was a real, measured,
-            // per-segment-accumulating bug, not an unavoidable ffmpeg
-            // quirk that tolerance alone could paper over). Same
-            // MidpointRounding.AwayFromZero convention TimelinePlanner
-            // already uses for its own target-duration quantization.
-            var frameCount = frameRate.ToFrameCount(placement.UsedDuration);
+            cumulativeIdealDuration += placement.UsedDuration;
+            var cumulativeFrameCountAfter = frameRate.ToFrameCount(cumulativeIdealDuration);
+            var frameCount = cumulativeFrameCountAfter - cumulativeFrameCount;
             if (frameCount <= 0)
             {
                 throw new RenderPlanException(
                     $"Placement {placement.Position}'s duration ({placement.UsedDuration}) rounds to {frameCount} frames at the output frame rate {frameRate} - too short to render.");
             }
 
+            cumulativeFrameCount = cumulativeFrameCountAfter;
             var quantizedDuration = frameRate.FromFrameCount(frameCount);
 
             var segmentEnd = placement.SourceRange.Start + quantizedDuration;
@@ -112,10 +147,13 @@ public sealed class RenderPlanBuilder : IRenderPlanBuilder
                 SourceDuration = quantizedDuration,
                 IsTrimmed = placement.IsTrimmed,
             });
-            plannedVideoDuration += quantizedDuration;
         }
 
-        segments.Sort((a, b) => a.Position.CompareTo(b.Position));
+        // The exact duration of the cumulative frame count committed above
+        // - not a running TimeSpan sum of the individually-rounded segment
+        // durations, which would reintroduce its own (much smaller, but
+        // nonzero) per-addition tick-rounding error across many segments.
+        var plannedVideoDuration = frameRate.FromFrameCount(cumulativeFrameCount);
 
         return new RenderPlan
         {
