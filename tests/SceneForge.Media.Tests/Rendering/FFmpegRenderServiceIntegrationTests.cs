@@ -94,6 +94,83 @@ public sealed class FFmpegRenderServiceIntegrationTests : IDisposable
         Assert.Single((await ffprobeService.ProbeAsync(outputPath, CancellationToken.None)).AudioStreams);
     }
 
+    // Real-ffmpeg proof that the duration-only self-correction loop
+    // (FFmpegRenderService.CorrectDurationOnlyFailureAsync -
+    // docs/RENDER_DURATION_SELF_CORRECTION.md) actually produces a valid
+    // file against real encodes, not just against fakes. A genuine render
+    // of real, correctly-planned segments always reaches the same real
+    // duration regardless of which encoder or how many identical retries
+    // run it - so a deliberately WRONG RenderPlan.PlannedVideoDuration
+    // (the plan's own claim of what duration to verify against) forces a
+    // real, reproducible duration-only miss that same-encoder and forced-
+    // software retries cannot fix, driving the loop all the way to tier 3
+    // (RenderDurationCorrector's real pad-then-trim ffmpeg pass). Proves the
+    // product requirement end to end: RenderAsync still returns a valid,
+    // successfully-verified file - it never throws RenderVerificationException -
+    // and the real corrected file's real ffprobe duration lands on the
+    // (deliberately mismatched) planned duration, not on whatever the
+    // segments would naturally have produced.
+    [SkippableFact]
+    public async Task RenderAsync_RealFfmpeg_PlannedDurationDeliberatelyWrong_SelfCorrectsToTheExactPlannedDurationWithoutThrowing()
+    {
+        Skip.IfNot(RealFfmpegAvailability.IsAvailable, RealFfmpegAvailability.SkipReason);
+        Directory.CreateDirectory(_outputDirectory);
+
+        var processRunner = new ProcessRunner();
+        var toolLocator = new FfmpegToolLocator(processRunner);
+        var ffprobeService = new FfprobeService(processRunner, toolLocator);
+
+        var videoPath = Path.Combine(AppContext.BaseDirectory, "Fixtures", "Media", "sample_video_audio.mp4");
+        var audioPath = Path.Combine(AppContext.BaseDirectory, "Fixtures", "Media", "sample_audio_only.m4a");
+
+        var sourceMediaInfo = await ffprobeService.ProbeAsync(videoPath, CancellationToken.None);
+        var audioMediaInfo = await ffprobeService.ProbeAsync(audioPath, CancellationToken.None);
+
+        var plannedHalfSegment = TimeSpan.FromTicks(Math.Min(
+            TimeSpan.FromSeconds(0.6).Ticks,
+            Math.Min(sourceMediaInfo.Duration.Ticks, audioMediaInfo.Duration.Ticks) / 3));
+
+        var placements = new[]
+        {
+            TimelinePlanBuilder.CreatePlacement(0, 0, sourceStartSeconds: 0, sourceDurationSeconds: plannedHalfSegment.TotalSeconds),
+            TimelinePlanBuilder.CreatePlacement(1, 1, sourceStartSeconds: plannedHalfSegment.TotalSeconds, sourceDurationSeconds: plannedHalfSegment.TotalSeconds),
+        };
+        var outputTimeBase = new RationalFrameRate(25, 1);
+        var timelinePlan = TimelinePlanBuilder.CreatePlan(placements, outputTimeBase);
+
+        var renderPlanRequest = new RenderPlanRequest
+        {
+            TimelinePlan = timelinePlan,
+            SourceFilePath = videoPath,
+            SourceMediaInfo = sourceMediaInfo,
+            OutputSpec = new RenderOutputSpec { Width = 160, Height = 120, FrameRate = outputTimeBase, FitMode = AspectFitMode.Letterbox },
+            Audio = new RenderAudioTrackSpec { FilePath = audioPath, TrimStart = TimeSpan.Zero, TrimDuration = timelinePlan.PlannedDuration },
+        };
+
+        var honestPlan = new RenderPlanBuilder().Build(renderPlanRequest);
+        var wrongPlannedDuration = honestPlan.PlannedVideoDuration + TimeSpan.FromSeconds(0.5);
+        var lyingPlan = honestPlan with { PlannedVideoDuration = wrongPlannedDuration };
+
+        var renderService = new FFmpegRenderService(processRunner, toolLocator, ffprobeService, new AdaptiveResourceGovernor());
+        var outputPath = Path.Combine(_outputDirectory, "rendered.mp4");
+
+        var result = await renderService.RenderAsync(lyingPlan, outputPath, progress: null, CancellationToken.None);
+
+        _output.WriteLine($"Honest segment duration={honestPlan.PlannedVideoDuration}, deliberately-wrong PlannedVideoDuration={wrongPlannedDuration}");
+        _output.WriteLine($"DurationCorrections: {string.Join(", ", result.DurationCorrections.Select(c => c.Kind))}");
+        _output.WriteLine($"Final verification: valid={result.Verification.IsValid}, actual={result.Verification.ActualDuration}, expected={result.Verification.ExpectedDuration}, delta={result.Verification.DurationDelta}");
+
+        Assert.True(result.Verification.IsValid, $"Verification failed: {result.Verification}");
+        Assert.NotEmpty(result.DurationCorrections);
+        Assert.Equal(RenderDurationCorrectionKind.FrameExactRemux, result.DurationCorrections[^1].Kind);
+
+        var reProbed = await ffprobeService.ProbeAsync(outputPath, CancellationToken.None);
+        var toleranceSeconds = outputTimeBase.FromFrameCount(1).TotalSeconds;
+        Assert.True(
+            Math.Abs((reProbed.Duration - wrongPlannedDuration).TotalSeconds) <= toleranceSeconds,
+            $"Corrected file's real ffprobe duration ({reProbed.Duration}) must land on the planned duration ({wrongPlannedDuration}) within one frame ({toleranceSeconds}s).");
+    }
+
     // Regression coverage for a real, measured bug that surfaced repeatedly
     // across Phase 9, Phase 12, and manual Phase 13 testing: ffmpeg's trim
     // filter keeps every source frame whose presentation time falls within

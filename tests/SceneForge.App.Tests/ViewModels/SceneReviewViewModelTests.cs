@@ -48,6 +48,20 @@ public class SceneReviewViewModelTests
     }
 
     [Fact]
+    public void IncludeAllCommand_MarksEveryClipIncluded_AndPersistsTheOverrides()
+    {
+        var session = BuildSessionWithClips(out _, out _);
+        var vm = new SceneReviewViewModel(session, new FakeThumbnailCacheService(), new WorkflowNavigator(), new FakeProjectPersistenceCoordinator());
+        Assert.Equal(1, vm.IncludedCount);
+
+        vm.IncludeAllCommand.Execute(null);
+
+        Assert.Equal(vm.TotalCount, vm.IncludedCount);
+        Assert.All(vm.Clips, clip => Assert.True(clip.IsIncluded));
+        Assert.True(session.ClipOverrides[1].IsIncluded);
+    }
+
+    [Fact]
     public void AdjustingBoundary_WithinRange_PersistsAdjustedRange()
     {
         var session = BuildSessionWithClips(out var accepted, out _);

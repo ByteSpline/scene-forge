@@ -85,8 +85,8 @@ public sealed partial class SceneReviewViewModel : ObservableObject
     }
 
 
-    
-        [RelayCommand]
+
+    [RelayCommand]
     private void IncludeAll()
     {
         foreach (var clip in Clips)

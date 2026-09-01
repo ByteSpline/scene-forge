@@ -185,6 +185,28 @@ public sealed class FFmpegRenderServiceTests : IDisposable
         return new RenderOutputVerifier(ffprobeService, processRunner, new FakeFfmpegToolLocator());
     }
 
+    // Reports a DURATION-ONLY problem (audio stream present, both endpoint
+    // frames decodable) whose duration is drawn from durationsPerCall in
+    // order - one entry consumed per RenderOutputVerifier.VerifyAsync call,
+    // the last entry repeating for any call beyond the array's length. Lets
+    // a test simulate "the first N verify calls miss tolerance, then a
+    // later one lands exactly on plan.PlannedVideoDuration" without needing
+    // a bespoke fake per scenario.
+    private static RenderOutputVerifier CreateSequencedDurationOnlyVerifier(FakeProcessRunner processRunner, params TimeSpan[] durationsPerCall)
+    {
+        var call = 0;
+        var ffprobeService = new FakeFfprobeService((_, _) =>
+        {
+            var duration = durationsPerCall[Math.Min(call, durationsPerCall.Length - 1)];
+            call++;
+            return Task.FromResult(MediaInfoBuilder.CreateVideoWithAudio("out.mp4", durationSeconds: duration.TotalSeconds));
+        });
+        return new RenderOutputVerifier(ffprobeService, processRunner, new FakeFfmpegToolLocator());
+    }
+
+    private static bool IsDurationCorrectionInvocation(ProcessExecutionRequest request) =>
+        request.Arguments.Contains("-vf") && request.Arguments.Any(a => a.Contains("tpad=stop_mode=clone", StringComparison.Ordinal));
+
     [Fact]
     public async Task RenderAsync_NullPlan_Throws()
     {
@@ -862,5 +884,148 @@ public sealed class FFmpegRenderServiceTests : IDisposable
         Assert.True(result.FellBackToSoftwareEncoder);
         Assert.Equal("libopenh264", result.Encoder.FfmpegEncoderName);
         Assert.Contains("retrying the whole render with software encoder 'libopenh264'", listener.Text);
+    }
+
+    // --- Duration-only verification self-correction (never a red "Render
+    // failed" for a duration-tolerance miss - see
+    // docs/RENDER_DURATION_SELF_CORRECTION.md) -----------------------------
+
+    [Theory]
+    [InlineData(true, true, true, true, true, false)] // everything else ok, duration within tolerance -> not a failure at all
+    [InlineData(false, true, true, true, true, true)] // duration-only miss
+    [InlineData(false, false, true, true, true, false)] // duration AND missing video stream -> not duration-only
+    [InlineData(false, true, false, true, true, false)] // duration AND wrong audio-stream count -> not duration-only
+    [InlineData(false, true, true, false, true, false)] // duration AND first frame undecodable -> not duration-only
+    [InlineData(false, true, true, true, false, false)] // duration AND last frame undecodable -> not duration-only
+    [InlineData(true, false, true, true, true, false)] // missing video stream alone, duration fine -> not duration-only (DurationWithinTolerance is true)
+    public void IsDurationOnlyFailure_ClassifiesExactlyDurationAloneMisses(
+        bool durationWithinTolerance, bool hasVideo, bool hasOneAudio, bool firstOk, bool lastOk, bool expected)
+    {
+        var result = new RenderVerificationResult
+        {
+            HasExpectedVideoStream = hasVideo,
+            HasExactlyOneAudioStream = hasOneAudio,
+            ExpectedDuration = TimeSpan.FromSeconds(3),
+            ActualDuration = TimeSpan.FromSeconds(durationWithinTolerance ? 3 : 2),
+            DurationDelta = TimeSpan.FromSeconds(durationWithinTolerance ? 0 : 1),
+            DurationTolerance = TimeSpan.FromMilliseconds(40),
+            DurationWithinTolerance = durationWithinTolerance,
+            FirstFrameDecodable = firstOk,
+            MiddleFrameDecodable = true,
+            LastFrameDecodable = lastOk,
+        };
+
+        Assert.Equal(expected, FFmpegRenderService.IsDurationOnlyFailure(result));
+    }
+
+    [Fact]
+    public async Task RenderAsync_DurationOnlyMismatch_SameEncoderRetryRecovers_SucceedsWithoutSurfacingError()
+    {
+        var plan = CreatePlan();
+        var processRunner = new FakeProcessRunner((_, _) => Task.FromResult(new ProcessExecutionResult { ExitCode = 0, StandardOutput = "", StandardError = "", Elapsed = TimeSpan.Zero }));
+        var verifier = CreateSequencedDurationOnlyVerifier(processRunner, plan.PlannedVideoDuration - TimeSpan.FromSeconds(1), plan.PlannedVideoDuration);
+        var service = new FFmpegRenderService(processRunner, new FakeFfmpegToolLocator(), new FakeEncoderProbe(SoftwareSelection), verifier, AlwaysSufficientResourceGovernor);
+
+        var result = await service.RenderAsync(plan, Path.Combine(_outputDirectory, "out.mp4"), null, CancellationToken.None);
+
+        Assert.True(result.Verification.IsValid);
+        Assert.Equal(2, processRunner.Requests.Count(IsRenderInvocation));
+        Assert.Equal(RenderDurationCorrectionKind.SameEncoderRetry, Assert.Single(result.DurationCorrections).Kind);
+    }
+
+    [Fact]
+    public async Task RenderAsync_DurationOnlyMismatchPersistsThroughSameEncoderRetry_ForcesSoftwareEncoderRetry_SucceedsWithoutSurfacingError()
+    {
+        var plan = CreatePlan();
+        var processRunner = new FakeProcessRunner((_, _) => Task.FromResult(new ProcessExecutionResult { ExitCode = 0, StandardOutput = "", StandardError = "", Elapsed = TimeSpan.Zero }));
+        var badDuration = plan.PlannedVideoDuration - TimeSpan.FromSeconds(1);
+        var verifier = CreateSequencedDurationOnlyVerifier(processRunner, badDuration, badDuration, plan.PlannedVideoDuration);
+        var service = new FFmpegRenderService(processRunner, new FakeFfmpegToolLocator(), new FakeEncoderProbe(HardwareSelection), verifier, AlwaysSufficientResourceGovernor);
+
+        var result = await service.RenderAsync(plan, Path.Combine(_outputDirectory, "out.mp4"), null, CancellationToken.None);
+
+        Assert.True(result.Verification.IsValid);
+        Assert.True(result.FellBackToSoftwareEncoder);
+        Assert.Equal(VideoEncoderKind.SoftwareX264, result.Encoder.Kind);
+        Assert.Equal(3, processRunner.Requests.Count(IsRenderInvocation));
+        Assert.Equal(
+            [RenderDurationCorrectionKind.SameEncoderRetry, RenderDurationCorrectionKind.ForcedSoftwareEncoderRetry],
+            result.DurationCorrections.Select(c => c.Kind));
+    }
+
+    [Fact]
+    public async Task RenderAsync_DurationOnlyMismatchPersistsThroughBothRetries_AppliesFrameExactRemux_SucceedsWithoutSurfacingError()
+    {
+        var plan = CreatePlan();
+        var outputPath = Path.Combine(_outputDirectory, "out.mp4");
+        var processRunner = new FakeProcessRunner((request, _) =>
+        {
+            if (IsDurationCorrectionInvocation(request))
+            {
+                // RenderDurationCorrector re-processes and swaps in a real
+                // file (File.Delete + File.Move) after a "successful" ffmpeg
+                // pass - the fake process never actually writes ffmpeg
+                // output, so the corrected-copy path must exist for real.
+                File.WriteAllBytes(request.Arguments[^1], []);
+            }
+
+            return Task.FromResult(new ProcessExecutionResult { ExitCode = 0, StandardOutput = "", StandardError = "", Elapsed = TimeSpan.Zero });
+        });
+        var badDuration = plan.PlannedVideoDuration - TimeSpan.FromSeconds(1);
+        var verifier = CreateSequencedDurationOnlyVerifier(processRunner, badDuration, badDuration, badDuration, plan.PlannedVideoDuration);
+        var service = new FFmpegRenderService(processRunner, new FakeFfmpegToolLocator(), new FakeEncoderProbe(SoftwareSelection), verifier, AlwaysSufficientResourceGovernor);
+
+        var result = await service.RenderAsync(plan, outputPath, null, CancellationToken.None);
+
+        Assert.True(result.Verification.IsValid);
+        Assert.Equal(
+            [RenderDurationCorrectionKind.SameEncoderRetry, RenderDurationCorrectionKind.ForcedSoftwareEncoderRetry, RenderDurationCorrectionKind.FrameExactRemux],
+            result.DurationCorrections.Select(c => c.Kind));
+        Assert.Single(processRunner.Requests, IsDurationCorrectionInvocation);
+    }
+
+    [Fact]
+    public async Task RenderAsync_DurationOnlyMismatchNeverRecovers_ThrowsRenderVerificationException_OnlyAfterExhaustingAllThreeTiers()
+    {
+        var plan = CreatePlan();
+        var badDuration = plan.PlannedVideoDuration - TimeSpan.FromSeconds(1);
+        var processRunner = new FakeProcessRunner((request, _) =>
+        {
+            if (IsDurationCorrectionInvocation(request))
+            {
+                File.WriteAllBytes(request.Arguments[^1], []);
+            }
+
+            return Task.FromResult(new ProcessExecutionResult { ExitCode = 0, StandardOutput = "", StandardError = "", Elapsed = TimeSpan.Zero });
+        });
+        // Every VerifyAsync call reports the same out-of-tolerance duration -
+        // even the guaranteed-effective remux "doesn't help" in this fake,
+        // proving the loop still terminates (bounded, per CLAUDE.md rule 6)
+        // and surfaces the failure rather than retrying forever.
+        var verifier = CreateSequencedDurationOnlyVerifier(processRunner, badDuration);
+        var service = new FFmpegRenderService(processRunner, new FakeFfmpegToolLocator(), new FakeEncoderProbe(SoftwareSelection), verifier, AlwaysSufficientResourceGovernor);
+
+        var exception = await Assert.ThrowsAsync<RenderVerificationException>(
+            () => service.RenderAsync(plan, Path.Combine(_outputDirectory, "out.mp4"), null, CancellationToken.None));
+
+        Assert.False(exception.Result.DurationWithinTolerance);
+        Assert.Equal(3, processRunner.Requests.Count(IsRenderInvocation));
+        Assert.Single(processRunner.Requests, IsDurationCorrectionInvocation);
+    }
+
+    [Fact]
+    public async Task RenderAsync_NonDurationVerificationFailure_NeverAttemptsCorrection_ThrowsImmediately()
+    {
+        var plan = CreatePlan();
+        var processRunner = new FakeProcessRunner((_, _) => Task.FromResult(new ProcessExecutionResult { ExitCode = 0, StandardOutput = "", StandardError = "", Elapsed = TimeSpan.Zero }));
+        var service = new FFmpegRenderService(processRunner, new FakeFfmpegToolLocator(), new FakeEncoderProbe(SoftwareSelection), CreateFailingVerifier(processRunner), AlwaysSufficientResourceGovernor);
+
+        await Assert.ThrowsAsync<RenderVerificationException>(
+            () => service.RenderAsync(plan, Path.Combine(_outputDirectory, "out.mp4"), null, CancellationToken.None));
+
+        // A failure that ALSO fails a content check (here: wrong audio-stream
+        // count) is not duration-only - no correction tier should ever run.
+        Assert.Equal(1, processRunner.Requests.Count(IsRenderInvocation));
+        Assert.DoesNotContain(processRunner.Requests, IsDurationCorrectionInvocation);
     }
 }
