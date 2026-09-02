@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using SceneForge.Accuracy.Fixtures;
+using SceneForge.Core.Resources;
 using SceneForge.Media.Detection;
 using SceneForge.Media.Domain;
 using SceneForge.Media.Probing;
@@ -106,7 +107,7 @@ public static class FixtureEvaluationRunner
         var processRunner = new ProcessRunner();
         var toolLocator = new FfmpegToolLocator(processRunner, applicationBaseDirectory);
         var ffprobeService = new FfprobeService(processRunner, toolLocator);
-        var frameSampler = new FrameSampler(toolLocator, ffprobeService);
+        var frameSampler = new FrameSampler(toolLocator, ffprobeService, new AdaptiveResourceGovernor());
         return new TransitionDetector(frameSampler, ffprobeService);
     }
 

@@ -1,4 +1,5 @@
 using SceneForge.Accuracy.Fixtures;
+using SceneForge.Core.Resources;
 using SceneForge.Media.Detection;
 using SceneForge.Media.Detection.Fusion;
 using SceneForge.Media.Domain;
@@ -198,7 +199,7 @@ public class TransitionDetectorFixtureTests
         var processRunner = new ProcessRunner();
         var toolLocator = new FfmpegToolLocator(processRunner);
         var ffprobeService = new FfprobeService(processRunner, toolLocator);
-        var frameSampler = new FrameSampler(toolLocator, ffprobeService);
+        var frameSampler = new FrameSampler(toolLocator, ffprobeService, new AdaptiveResourceGovernor());
         return new TransitionDetector(frameSampler, ffprobeService);
     }
 }

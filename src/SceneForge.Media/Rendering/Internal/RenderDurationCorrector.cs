@@ -1,4 +1,5 @@
 using System.Globalization;
+using SceneForge.Core.Resources;
 using SceneForge.Media.Processes;
 using SceneForge.Media.Tooling;
 
@@ -18,11 +19,13 @@ internal sealed class RenderDurationCorrector
 {
     private readonly IProcessRunner _processRunner;
     private readonly IFfmpegToolLocator _toolLocator;
+    private readonly IAdaptiveResourceGovernor _resourceGovernor;
 
-    public RenderDurationCorrector(IProcessRunner processRunner, IFfmpegToolLocator toolLocator)
+    public RenderDurationCorrector(IProcessRunner processRunner, IFfmpegToolLocator toolLocator, IAdaptiveResourceGovernor resourceGovernor)
     {
         _processRunner = processRunner;
         _toolLocator = toolLocator;
+        _resourceGovernor = resourceGovernor;
     }
 
     public async Task CorrectAsync(string outputFilePath, RenderPlan plan, VideoEncoderSelection encoder, CancellationToken cancellationToken)
@@ -51,6 +54,7 @@ internal sealed class RenderDurationCorrector
         var arguments = new List<string>
         {
             "-hide_banner", "-y", "-loglevel", "error",
+            "-threads", _resourceGovernor.MaxWorkers.ToString(CultureInfo.InvariantCulture),
             "-i", outputFilePath,
             "-vf", videoFilter,
             "-af", audioFilter,

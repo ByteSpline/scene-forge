@@ -11,9 +11,18 @@ namespace SceneForge.Core.Resources;
 // reverse reference from Media, which would create a cycle.
 public interface IAdaptiveResourceGovernor
 {
-    // Max(1, Environment.ProcessorCount - 1) - leaves one logical CPU free
-    // for the OS/UI/other applications rather than saturating every core.
-    // Never zero, even on a single-core machine.
+    // The app-wide CPU-equivalent budget: roughly 35% of this machine's
+    // logical processors (Max(1, floor(Environment.ProcessorCount * 0.35)) -
+    // see AdaptiveResourceGovernor.CpuBudgetFraction), never zero even on a
+    // single-core machine. This is a hard ceiling, not "leave one core
+    // free": every ffmpeg invocation in the app must pass this value (or a
+    // documented share of it) as its -threads argument, and every OpenCV
+    // call path must cap Cv2.SetNumThreads to it (or a documented share) -
+    // MaxWorkers on its own only bounds how many *processes/tasks* run
+    // concurrently, not how many threads each one uses internally, and
+    // ffmpeg/OpenCV both default to using every logical CPU on their own if
+    // not told otherwise. See FrameSampler and FFmpegRenderService for the
+    // two composition points that apply this.
     int MaxWorkers { get; }
 
     // Throws InsufficientDiskSpaceException if the drive containing path

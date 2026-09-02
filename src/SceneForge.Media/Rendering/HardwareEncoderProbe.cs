@@ -1,3 +1,5 @@
+using System.Globalization;
+using SceneForge.Core.Resources;
 using SceneForge.Media.Processes;
 using SceneForge.Media.Rendering.Internal;
 using SceneForge.Media.Tooling;
@@ -41,6 +43,7 @@ public sealed class HardwareEncoderProbe : IHardwareEncoderProbe
 
     private readonly IProcessRunner _processRunner;
     private readonly IFfmpegToolLocator _toolLocator;
+    private readonly IAdaptiveResourceGovernor _resourceGovernor;
 
     // Real candidate probing launches real ffmpeg smoke-test processes;
     // FFmpegRenderService constructs one HardwareEncoderProbe per app
@@ -63,13 +66,15 @@ public sealed class HardwareEncoderProbe : IHardwareEncoderProbe
     private VideoEncoderSelection? _cachedSelection;
     private VideoEncoderSelection? _cachedSoftwareSelection;
 
-    public HardwareEncoderProbe(IProcessRunner processRunner, IFfmpegToolLocator toolLocator)
+    public HardwareEncoderProbe(IProcessRunner processRunner, IFfmpegToolLocator toolLocator, IAdaptiveResourceGovernor resourceGovernor)
     {
         ArgumentNullException.ThrowIfNull(processRunner);
         ArgumentNullException.ThrowIfNull(toolLocator);
+        ArgumentNullException.ThrowIfNull(resourceGovernor);
 
         _processRunner = processRunner;
         _toolLocator = toolLocator;
+        _resourceGovernor = resourceGovernor;
     }
 
     public Task<VideoEncoderSelection> SelectEncoderAsync(CancellationToken cancellationToken) =>
@@ -143,6 +148,7 @@ public sealed class HardwareEncoderProbe : IHardwareEncoderProbe
             var arguments = new List<string>
             {
                 "-hide_banner", "-loglevel", "error", "-y",
+                "-threads", _resourceGovernor.MaxWorkers.ToString(CultureInfo.InvariantCulture),
                 "-f", "lavfi", "-i", SmokeTestSource,
                 "-frames:v", SmokeTestFrameCount,
                 "-c:v", candidate.FfmpegName,

@@ -99,6 +99,15 @@ public sealed class ThumbnailCacheService : IThumbnailCacheService, IDisposable
                     Arguments =
                     [
                         "-y",
+                        // Concurrency (up to MaxWorkers simultaneous ffmpeg
+                        // processes - see _concurrencyLimiter above) already
+                        // spends the whole CPU budget on process fan-out;
+                        // each individual single-frame extraction gets a
+                        // fixed 1 thread so MaxWorkers concurrent processes
+                        // never adds up to more than MaxWorkers threads
+                        // total (CLAUDE.md rule 6 / the app-wide CPU cap).
+                        "-threads",
+                        "1",
                         "-ss",
                         timestamp.TotalSeconds.ToString(CultureInfo.InvariantCulture),
                         "-i",

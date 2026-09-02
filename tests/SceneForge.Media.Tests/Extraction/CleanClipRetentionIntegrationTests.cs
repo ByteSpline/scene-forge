@@ -1,3 +1,4 @@
+using SceneForge.Core.Resources;
 using SceneForge.Media.Domain;
 using SceneForge.Media.Extraction;
 using SceneForge.Media.Probing;
@@ -224,7 +225,7 @@ public sealed class CleanClipRetentionIntegrationTests : IDisposable
         var processRunner = new ProcessRunner();
         var toolLocator = new FfmpegToolLocator(processRunner);
         var ffprobeService = new FfprobeService(processRunner, toolLocator);
-        var frameSampler = new FrameSampler(toolLocator, ffprobeService);
+        var frameSampler = new FrameSampler(toolLocator, ffprobeService, new AdaptiveResourceGovernor());
         return new CleanClipExtractor(frameSampler, ffprobeService);
     }
 }

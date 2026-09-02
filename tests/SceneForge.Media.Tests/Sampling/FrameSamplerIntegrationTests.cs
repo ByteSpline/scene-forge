@@ -1,3 +1,4 @@
+using SceneForge.Core.Resources;
 using SceneForge.Media.Probing;
 using SceneForge.Media.Processes;
 using SceneForge.Media.Sampling;
@@ -105,6 +106,6 @@ public class FrameSamplerIntegrationTests
         var processRunner = new ProcessRunner();
         var toolLocator = new FfmpegToolLocator(processRunner);
         var ffprobeService = new FfprobeService(processRunner, toolLocator);
-        return new FrameSampler(toolLocator, ffprobeService);
+        return new FrameSampler(toolLocator, ffprobeService, new AdaptiveResourceGovernor());
     }
 }

@@ -3,6 +3,8 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
+using OpenCvSharp;
+using SceneForge.Core.Resources;
 using SceneForge.Media.Domain;
 using SceneForge.Media.Probing;
 using SceneForge.Media.Tooling;
@@ -19,26 +21,75 @@ namespace SceneForge.Media.Sampling;
 // System.Threading.Channels channel, so a slow consumer applies real
 // backpressure to the ffmpeg process (bounded memory/concurrency, rule 6)
 // instead of the producer racing ahead and accumulating frames in memory.
+//
+// This is also the one composition point every OpenCV-consuming analysis
+// stage (TransitionDetector's SignalPipeline, CleanClipExtractor's
+// ClipFrameMetricsPipeline) depends on to source frames in the first place,
+// so it is where the app's whole-machine CPU budget (
+// IAdaptiveResourceGovernor.MaxWorkers) gets split and applied to BOTH
+// halves of the concurrent decode/analyze pipeline it drives - see
+// ApplyCpuBudget. Neither ffmpeg nor OpenCV bounds its own internal
+// threading by default (both happily use every logical CPU), and the two
+// run concurrently here (this class streams decoded frames through a
+// bounded channel to a consumer while ffmpeg is still decoding further
+// frames), so handing the FULL budget to each independently would let
+// their combined usage run up to 2x over the cap. Splitting it once here
+// means callers that construct a FrameSampler never have to remember to
+// configure OpenCV themselves.
 public sealed class FrameSampler : IFrameSampler
 {
+    // ffmpeg's share of the CPU budget for the decode + fps/showinfo/scale
+    // filter chain here. Deliberately small and fixed rather than
+    // proportional to MaxWorkers: this decode always targets an already
+    // downscaled analysis-resolution stream (see FrameDimensions.
+    // ForTargetWidth), so it is the cheap side of the concurrent
+    // decode/analyze pair - the CPU-heavy work is the per-frame OpenCV
+    // analysis on the consuming side (Farneback optical flow, Canny,
+    // histogram math), which gets the rest of the budget. See
+    // ApplyCpuBudget.
+    internal const int FfmpegDecodeThreadShare = 1;
+
     private readonly IFfmpegToolLocator _toolLocator;
     private readonly IFfprobeService _ffprobeService;
     private readonly IFrameSamplingProcessLauncher _processLauncher;
+    private readonly int _ffmpegThreadCount;
 
-    public FrameSampler(IFfmpegToolLocator toolLocator, IFfprobeService ffprobeService)
-        : this(toolLocator, ffprobeService, new FfmpegFrameSamplingProcessLauncher())
+    public FrameSampler(IFfmpegToolLocator toolLocator, IFfprobeService ffprobeService, IAdaptiveResourceGovernor resourceGovernor)
+        : this(toolLocator, ffprobeService, resourceGovernor, new FfmpegFrameSamplingProcessLauncher())
     {
     }
 
-    internal FrameSampler(IFfmpegToolLocator toolLocator, IFfprobeService ffprobeService, IFrameSamplingProcessLauncher processLauncher)
+    internal FrameSampler(
+        IFfmpegToolLocator toolLocator,
+        IFfprobeService ffprobeService,
+        IAdaptiveResourceGovernor resourceGovernor,
+        IFrameSamplingProcessLauncher processLauncher)
     {
         ArgumentNullException.ThrowIfNull(toolLocator);
         ArgumentNullException.ThrowIfNull(ffprobeService);
+        ArgumentNullException.ThrowIfNull(resourceGovernor);
         ArgumentNullException.ThrowIfNull(processLauncher);
 
         _toolLocator = toolLocator;
         _ffprobeService = ffprobeService;
         _processLauncher = processLauncher;
+        _ffmpegThreadCount = ApplyCpuBudget(resourceGovernor);
+    }
+
+    // Splits IAdaptiveResourceGovernor.MaxWorkers between ffmpeg's decode
+    // threads (this class's own ffmpeg invocation) and OpenCV's internal
+    // thread pool (every Cv2.* call any downstream consumer of this
+    // class's frames makes) so their concurrent combined usage never
+    // exceeds the budget - see the class remarks. Cv2.SetNumThreads is a
+    // process-wide setting; calling it repeatedly (e.g. once per
+    // FrameSampler constructed) is cheap and idempotent for the same
+    // governor, so no extra coordination is needed.
+    private static int ApplyCpuBudget(IAdaptiveResourceGovernor resourceGovernor)
+    {
+        var ffmpegThreads = Math.Min(FfmpegDecodeThreadShare, resourceGovernor.MaxWorkers);
+        var openCvThreads = Math.Max(1, resourceGovernor.MaxWorkers - ffmpegThreads);
+        Cv2.SetNumThreads(openCvThreads);
+        return ffmpegThreads;
     }
 
     public IAsyncEnumerable<FrameSample> SampleAsync(
@@ -75,7 +126,7 @@ public sealed class FrameSampler : IFrameSampler
 
         var dimensions = FrameDimensions.ForTargetWidth(videoStream.Width, videoStream.Height, options.AnalysisWidthPixels, options.PixelFormat);
         var tools = await _toolLocator.LocateAsync(cancellationToken).ConfigureAwait(false);
-        var arguments = BuildFfmpegArguments(validatedPath, options, dimensions);
+        var arguments = BuildFfmpegArguments(validatedPath, options, dimensions, _ffmpegThreadCount);
 
         var process = await _processLauncher.StartAsync(tools.FfmpegPath, arguments, cancellationToken).ConfigureAwait(false);
 
@@ -249,7 +300,7 @@ public sealed class FrameSampler : IFrameSampler
         }
     }
 
-    private static IReadOnlyList<string> BuildFfmpegArguments(string filePath, FrameSamplingOptions options, FrameDimensions dimensions)
+    private static IReadOnlyList<string> BuildFfmpegArguments(string filePath, FrameSamplingOptions options, FrameDimensions dimensions, int threadCount)
     {
         var fps = options.SampleFramesPerSecond.ToString(CultureInfo.InvariantCulture);
         var filter = $"fps={fps},showinfo,scale={dimensions.Width}:{dimensions.Height}";
@@ -259,6 +310,7 @@ public sealed class FrameSampler : IFrameSampler
             "-hide_banner",
             "-nostats",
             "-loglevel", "info",
+            "-threads", threadCount.ToString(CultureInfo.InvariantCulture),
             "-i", filePath,
             "-vf", filter,
             "-pix_fmt", options.PixelFormat.ToFfmpegPixelFormatName(),

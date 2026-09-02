@@ -41,12 +41,13 @@ public static class PipelineProfiler
         var processRunner = new ProcessRunner();
         var toolLocator = new FfmpegToolLocator(processRunner, applicationBaseDirectory);
         var ffprobeService = new FfprobeService(processRunner, toolLocator);
-        var frameSampler = new FrameSampler(toolLocator, ffprobeService);
+        var resourceGovernor = new AdaptiveResourceGovernor();
+        var frameSampler = new FrameSampler(toolLocator, ffprobeService, resourceGovernor);
         var detector = new TransitionDetector(frameSampler, ffprobeService);
         var extractor = new CleanClipExtractor(frameSampler, ffprobeService);
         var planner = new TimelinePlanner();
         var renderPlanBuilder = new RenderPlanBuilder();
-        var renderService = new FFmpegRenderService(processRunner, toolLocator, ffprobeService, new AdaptiveResourceGovernor());
+        var renderService = new FFmpegRenderService(processRunner, toolLocator, ffprobeService, resourceGovernor);
 
         var outputDirectory = Directory.CreateTempSubdirectory("sceneforge-profiling-run");
         try
