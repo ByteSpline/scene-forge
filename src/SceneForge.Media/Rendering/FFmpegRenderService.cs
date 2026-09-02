@@ -139,7 +139,7 @@ public sealed class FFmpegRenderService : IFFmpegRenderService
     private readonly RenderDurationCorrector _durationCorrector;
 
     public FFmpegRenderService(IProcessRunner processRunner, IFfmpegToolLocator toolLocator, IFfprobeService ffprobeService, IAdaptiveResourceGovernor resourceGovernor)
-        : this(processRunner, toolLocator, new HardwareEncoderProbe(processRunner, toolLocator), new RenderOutputVerifier(ffprobeService, processRunner, toolLocator), resourceGovernor)
+        : this(processRunner, toolLocator, new HardwareEncoderProbe(processRunner, toolLocator, resourceGovernor), new RenderOutputVerifier(ffprobeService, processRunner, toolLocator), resourceGovernor)
     {
     }
 
@@ -161,7 +161,7 @@ public sealed class FFmpegRenderService : IFFmpegRenderService
         _encoderProbe = encoderProbe;
         _verifier = verifier;
         _resourceGovernor = resourceGovernor;
-        _durationCorrector = new RenderDurationCorrector(processRunner, toolLocator);
+        _durationCorrector = new RenderDurationCorrector(processRunner, toolLocator, resourceGovernor);
     }
 
     public async Task<RenderResult> RenderAsync(
@@ -535,7 +535,7 @@ public sealed class FFmpegRenderService : IFFmpegRenderService
         {
             var filterGraph = RenderFilterGraphBuilder.Build(plan);
             var filterArguments = BuildFilterArguments(filterGraph, out scriptFilePath);
-            var arguments = BuildArguments(plan, outputFilePath, encoder, filterArguments);
+            var arguments = BuildArguments(plan, outputFilePath, encoder, filterArguments, _resourceGovernor.MaxWorkers);
 
             var parser = new RenderProgressParser();
             var outputProgress = progress is null
@@ -695,7 +695,7 @@ public sealed class FFmpegRenderService : IFFmpegRenderService
                 new ProcessExecutionRequest
                 {
                     FileName = ffmpegPath,
-                    Arguments = BuildStageBConcatArguments(plan, listFilePath, outputFilePath),
+                    Arguments = BuildStageBConcatArguments(plan, listFilePath, outputFilePath, _resourceGovernor.MaxWorkers),
                     OutputProgress = outputProgress,
                 },
                 cancellationToken).ConfigureAwait(false);
@@ -827,7 +827,7 @@ public sealed class FFmpegRenderService : IFFmpegRenderService
             new ProcessExecutionRequest
             {
                 FileName = context.FfmpegPath,
-                Arguments = BuildSegmentRunArguments(context.Plan, segments, context.Encoder, context.WorkingDirectory, pieceIndex, pieceFile),
+                Arguments = BuildSegmentRunArguments(context.Plan, segments, context.Encoder, context.WorkingDirectory, pieceIndex, pieceFile, _resourceGovernor.MaxWorkers),
             },
             cancellationToken).ConfigureAwait(false);
 
@@ -936,14 +936,15 @@ public sealed class FFmpegRenderService : IFFmpegRenderService
         VideoEncoderSelection encoder,
         string workingDirectory,
         int pieceIndex,
-        string pieceFile)
+        string pieceFile,
+        int threadCount)
     {
         var spec = plan.OutputSpec;
         var frameRate = $"{spec.FrameRate.Numerator}/{spec.FrameRate.Denominator}";
         var frameCount = segments.Sum(s => Math.Max(1, spec.FrameRate.ToFrameCount(s.SourceDuration)));
         var graph = RenderFilterGraphBuilder.BuildSeekedVideoConcat(segments, spec, plan.SourceRotationDegrees);
 
-        var arguments = new List<string> { "-hide_banner", "-y", "-loglevel", "error" };
+        var arguments = new List<string> { "-hide_banner", "-y", "-loglevel", "error", "-threads", threadCount.ToString(CultureInfo.InvariantCulture) };
         foreach (var segment in segments)
         {
             arguments.Add("-ss");
@@ -983,11 +984,12 @@ public sealed class FFmpegRenderService : IFFmpegRenderService
     // the assembled video, and trim/encode the supplied audio track in the
     // same pass. No -map of 0:a anywhere - the concat input carries only the
     // pre-rendered (audio-free) video pieces.
-    private static List<string> BuildStageBConcatArguments(RenderPlan plan, string listFilePath, string outputFilePath)
+    private static List<string> BuildStageBConcatArguments(RenderPlan plan, string listFilePath, string outputFilePath, int threadCount)
     {
         var arguments = new List<string>
         {
             "-hide_banner", "-y", "-loglevel", "error",
+            "-threads", threadCount.ToString(CultureInfo.InvariantCulture),
             "-f", "concat", "-safe", "0", "-i", listFilePath,
             "-i", plan.Audio.FilePath,
             InlineFilterComplexOption, RenderFilterGraphBuilder.BuildAudioOnlyGraph(plan.Audio),
@@ -1074,7 +1076,8 @@ public sealed class FFmpegRenderService : IFFmpegRenderService
         RenderPlan plan,
         string outputFilePath,
         VideoEncoderSelection encoder,
-        IReadOnlyList<string> filterArguments)
+        IReadOnlyList<string> filterArguments,
+        int threadCount)
     {
         var spec = plan.OutputSpec;
         var frameRate = $"{spec.FrameRate.Numerator}/{spec.FrameRate.Denominator}";
@@ -1082,6 +1085,7 @@ public sealed class FFmpegRenderService : IFFmpegRenderService
         var arguments = new List<string>
         {
             "-hide_banner", "-y", "-loglevel", "error",
+            "-threads", threadCount.ToString(CultureInfo.InvariantCulture),
             "-i", plan.SourceFilePath,
             "-i", plan.Audio.FilePath,
         };

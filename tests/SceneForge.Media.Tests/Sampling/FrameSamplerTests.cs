@@ -1,3 +1,4 @@
+using SceneForge.Core.Resources;
 using SceneForge.Media.Domain;
 using SceneForge.Media.Sampling;
 using SceneForge.Media.Tests.TestSupport;
@@ -47,7 +48,7 @@ public sealed class FrameSamplerTests : IDisposable
     {
         var mediaInfo = new MediaInfo { FilePath = "x", FormatName = "wav", Duration = TimeSpan.FromSeconds(1), VideoStreams = [], AudioStreams = [] };
         var launcher = new FakeFrameSamplingProcessLauncher((_, _) => throw new InvalidOperationException("ffmpeg must not be launched when there is no video stream."));
-        var sampler = new FrameSampler(new FakeFfmpegToolLocator(), FakeFfprobeService.ReturningMediaInfo(mediaInfo), launcher);
+        var sampler = new FrameSampler(new FakeFfmpegToolLocator(), FakeFfprobeService.ReturningMediaInfo(mediaInfo), new AdaptiveResourceGovernor(), launcher);
         var inputPath = CreateInputFile("audio.mp4");
 
         await Assert.ThrowsAsync<FrameSamplingException>(
@@ -112,6 +113,14 @@ public sealed class FrameSamplerTests : IDisposable
         Assert.Contains("fps=2,showinfo,scale=64:36", arguments);
         Assert.Contains("gray", arguments);
         Assert.Equal("pipe:1", arguments[^1]);
+
+        // ffmpeg defaults to auto-detecting and using every logical CPU if
+        // not told otherwise - CLAUDE.md rule 6 / the app-wide CPU budget
+        // (IAdaptiveResourceGovernor.MaxWorkers) requires this decode to be
+        // explicitly capped, not left to auto-detect.
+        var threadsIndex = arguments.ToList().IndexOf("-threads");
+        Assert.True(threadsIndex >= 0, "FrameSampler must pass -threads to ffmpeg so decode never auto-detects and uses every core.");
+        Assert.Equal(FrameSampler.FfmpegDecodeThreadShare.ToString(System.Globalization.CultureInfo.InvariantCulture), arguments[threadsIndex + 1]);
     }
 
     [Fact]
@@ -217,7 +226,7 @@ public sealed class FrameSamplerTests : IDisposable
     private static FrameSampler CreateSampler(int videoWidth, int videoHeight, FakeFrameSamplingProcessLauncher launcher)
     {
         var mediaInfo = CreateMediaInfo(videoWidth, videoHeight);
-        return new FrameSampler(new FakeFfmpegToolLocator(), FakeFfprobeService.ReturningMediaInfo(mediaInfo), launcher);
+        return new FrameSampler(new FakeFfmpegToolLocator(), FakeFfprobeService.ReturningMediaInfo(mediaInfo), new AdaptiveResourceGovernor(), launcher);
     }
 
     private static MediaInfo CreateMediaInfo(int width, int height) => new()

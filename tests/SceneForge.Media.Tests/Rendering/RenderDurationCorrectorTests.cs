@@ -1,4 +1,5 @@
 using System.Globalization;
+using SceneForge.Core.Resources;
 using SceneForge.Media.Domain;
 using SceneForge.Media.Processes;
 using SceneForge.Media.Rendering;
@@ -63,7 +64,7 @@ public sealed class RenderDurationCorrectorTests : IDisposable
             File.WriteAllBytes(request.Arguments[^1], [4, 5, 6]);
             return Task.FromResult(new ProcessExecutionResult { ExitCode = 0, StandardOutput = "", StandardError = "", Elapsed = TimeSpan.Zero });
         });
-        var corrector = new RenderDurationCorrector(processRunner, new FakeFfmpegToolLocator());
+        var corrector = new RenderDurationCorrector(processRunner, new FakeFfmpegToolLocator(), new AdaptiveResourceGovernor());
 
         await corrector.CorrectAsync(outputPath, plan, SoftwareSelection, CancellationToken.None);
 
@@ -106,7 +107,7 @@ public sealed class RenderDurationCorrectorTests : IDisposable
             File.WriteAllBytes(request.Arguments[^1], [1]);
             return Task.FromResult(new ProcessExecutionResult { ExitCode = 0, StandardOutput = "", StandardError = "", Elapsed = TimeSpan.Zero });
         });
-        var corrector = new RenderDurationCorrector(processRunner, new FakeFfmpegToolLocator());
+        var corrector = new RenderDurationCorrector(processRunner, new FakeFfmpegToolLocator(), new AdaptiveResourceGovernor());
 
         await corrector.CorrectAsync(outputPath, plan, SoftwareSelection, CancellationToken.None);
 
@@ -128,7 +129,7 @@ public sealed class RenderDurationCorrectorTests : IDisposable
             File.WriteAllBytes(correctedPath, [2, 2, 2, 2]);
             return Task.FromResult(new ProcessExecutionResult { ExitCode = 0, StandardOutput = "", StandardError = "", Elapsed = TimeSpan.Zero });
         });
-        var corrector = new RenderDurationCorrector(processRunner, new FakeFfmpegToolLocator());
+        var corrector = new RenderDurationCorrector(processRunner, new FakeFfmpegToolLocator(), new AdaptiveResourceGovernor());
 
         await corrector.CorrectAsync(outputPath, plan, SoftwareSelection, CancellationToken.None);
 
@@ -162,7 +163,7 @@ public sealed class RenderDurationCorrectorTests : IDisposable
             swapBlockers.Add(new FileStream(correctedPath, FileMode.Open, FileAccess.Read, FileShare.None));
             return Task.FromResult(new ProcessExecutionResult { ExitCode = 0, StandardOutput = "", StandardError = "", Elapsed = TimeSpan.Zero });
         });
-        var corrector = new RenderDurationCorrector(processRunner, new FakeFfmpegToolLocator());
+        var corrector = new RenderDurationCorrector(processRunner, new FakeFfmpegToolLocator(), new AdaptiveResourceGovernor());
 
         try
         {
@@ -190,7 +191,7 @@ public sealed class RenderDurationCorrectorTests : IDisposable
 
         var processRunner = new FakeProcessRunner((_, _) =>
             Task.FromResult(new ProcessExecutionResult { ExitCode = 1, StandardOutput = "", StandardError = "corrective pass boom", Elapsed = TimeSpan.Zero }));
-        var corrector = new RenderDurationCorrector(processRunner, new FakeFfmpegToolLocator());
+        var corrector = new RenderDurationCorrector(processRunner, new FakeFfmpegToolLocator(), new AdaptiveResourceGovernor());
 
         var exception = await Assert.ThrowsAsync<RenderExecutionException>(
             () => corrector.CorrectAsync(outputPath, plan, SoftwareSelection, CancellationToken.None));

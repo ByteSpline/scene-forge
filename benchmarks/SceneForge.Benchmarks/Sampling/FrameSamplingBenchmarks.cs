@@ -1,4 +1,5 @@
 using BenchmarkDotNet.Attributes;
+using SceneForge.Core.Resources;
 using SceneForge.Media.Domain;
 using SceneForge.Media.Sampling;
 
@@ -75,7 +76,7 @@ public class FrameSamplingBenchmarks
             new BenchmarkFrameSource(dimensions.ByteLength, TotalFrames),
             new BenchmarkShowInfoReader(TotalFrames, options.SampleFramesPerSecond)));
 
-        var sampler = new FrameSampler(new BenchmarkFfmpegToolLocator(), new BenchmarkFfprobeService(mediaInfo), launcher);
+        var sampler = new FrameSampler(new BenchmarkFfmpegToolLocator(), new BenchmarkFfprobeService(mediaInfo), new AdaptiveResourceGovernor(), launcher);
 
         var framesSeen = 0;
         await foreach (var frame in sampler.SampleAsync(_inputPath, options, progress: null, CancellationToken.None))

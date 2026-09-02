@@ -1,3 +1,4 @@
+using SceneForge.Core.Resources;
 using SceneForge.Media.Domain;
 using SceneForge.Media.Sampling;
 using SceneForge.Media.Tests.TestSupport;
@@ -87,7 +88,7 @@ public sealed class FrameSamplerMemoryTests : IDisposable
         var launcher = new FakeFrameSamplingProcessLauncher((_, _) => new FakeFrameSamplingProcess(
             new SyntheticFrameSourceStream(Width * Height, totalFrames),
             new SyntheticShowInfoTextReader(totalFrames, Fps)));
-        var sampler = new FrameSampler(new FakeFfmpegToolLocator(), FakeFfprobeService.ReturningMediaInfo(mediaInfo), launcher);
+        var sampler = new FrameSampler(new FakeFfmpegToolLocator(), FakeFfprobeService.ReturningMediaInfo(mediaInfo), new AdaptiveResourceGovernor(), launcher);
         var options = new FrameSamplingOptions
         {
             AnalysisWidthPixels = Width,

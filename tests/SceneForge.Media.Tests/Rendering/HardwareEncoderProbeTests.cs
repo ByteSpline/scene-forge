@@ -1,3 +1,4 @@
+using SceneForge.Core.Resources;
 using SceneForge.Media.Processes;
 using SceneForge.Media.Rendering;
 using SceneForge.Media.Tests.TestSupport;
@@ -6,6 +7,8 @@ namespace SceneForge.Media.Tests.Rendering;
 
 public class HardwareEncoderProbeTests
 {
+    private static IAdaptiveResourceGovernor Governor => new AdaptiveResourceGovernor();
+
     private static readonly string?[] SoftwareCandidatesInOrder = ["libx264", "libopenh264"];
     private static readonly string?[] NvencThenLibx264 = ["h264_nvenc", "libx264"];
 
@@ -27,7 +30,7 @@ public class HardwareEncoderProbeTests
     public async Task SelectEncoderAsync_NvencSucceeds_ReturnsNvencFirst()
     {
         var processRunner = new FakeProcessRunner((request, _) => Task.FromResult(Result(0)));
-        var probe = new HardwareEncoderProbe(processRunner, new FakeFfmpegToolLocator());
+        var probe = new HardwareEncoderProbe(processRunner, new FakeFfmpegToolLocator(), Governor);
 
         var selection = await probe.SelectEncoderAsync(CancellationToken.None);
 
@@ -45,7 +48,7 @@ public class HardwareEncoderProbeTests
             var encoder = EncoderNameFromRequest(request);
             return Task.FromResult(Result(encoder == "h264_qsv" ? 0 : 1));
         });
-        var probe = new HardwareEncoderProbe(processRunner, new FakeFfmpegToolLocator());
+        var probe = new HardwareEncoderProbe(processRunner, new FakeFfmpegToolLocator(), Governor);
 
         var selection = await probe.SelectEncoderAsync(CancellationToken.None);
 
@@ -61,7 +64,7 @@ public class HardwareEncoderProbeTests
             var encoder = EncoderNameFromRequest(request);
             return Task.FromResult(Result(encoder == "libx264" ? 0 : 1));
         });
-        var probe = new HardwareEncoderProbe(processRunner, new FakeFfmpegToolLocator());
+        var probe = new HardwareEncoderProbe(processRunner, new FakeFfmpegToolLocator(), Governor);
 
         var selection = await probe.SelectEncoderAsync(CancellationToken.None);
 
@@ -74,7 +77,7 @@ public class HardwareEncoderProbeTests
     public async Task SelectEncoderAsync_EveryCandidateFails_ThrowsRenderExecutionException()
     {
         var processRunner = new FakeProcessRunner((_, _) => Task.FromResult(Result(1)));
-        var probe = new HardwareEncoderProbe(processRunner, new FakeFfmpegToolLocator());
+        var probe = new HardwareEncoderProbe(processRunner, new FakeFfmpegToolLocator(), Governor);
 
         await Assert.ThrowsAsync<RenderExecutionException>(() => probe.SelectEncoderAsync(CancellationToken.None));
     }
@@ -92,7 +95,7 @@ public class HardwareEncoderProbeTests
 
             return Task.FromResult(Result(encoder == "h264_qsv" ? 0 : 1));
         });
-        var probe = new HardwareEncoderProbe(processRunner, new FakeFfmpegToolLocator());
+        var probe = new HardwareEncoderProbe(processRunner, new FakeFfmpegToolLocator(), Governor);
 
         var selection = await probe.SelectEncoderAsync(CancellationToken.None);
 
@@ -103,7 +106,7 @@ public class HardwareEncoderProbeTests
     public async Task SelectEncoderAsync_CalledTwiceOnSameInstance_OnlyProbesOnce()
     {
         var processRunner = new FakeProcessRunner((request, _) => Task.FromResult(Result(0)));
-        var probe = new HardwareEncoderProbe(processRunner, new FakeFfmpegToolLocator());
+        var probe = new HardwareEncoderProbe(processRunner, new FakeFfmpegToolLocator(), Governor);
 
         var first = await probe.SelectEncoderAsync(CancellationToken.None);
         var second = await probe.SelectEncoderAsync(CancellationToken.None);
@@ -129,7 +132,7 @@ public class HardwareEncoderProbeTests
 
             return Task.FromResult(Result(1));
         });
-        var probe = new HardwareEncoderProbe(processRunner, new FakeFfmpegToolLocator());
+        var probe = new HardwareEncoderProbe(processRunner, new FakeFfmpegToolLocator(), Governor);
 
         // First call: NVENC smoke test throws (treated as failure, same as
         // ProcessLaunchException), every other candidate fails too in this
@@ -145,7 +148,7 @@ public class HardwareEncoderProbeTests
     public async Task SelectEncoderAsync_PreCancelledToken_ThrowsOperationCanceledExceptionBeforeAnyCandidate()
     {
         var processRunner = new FakeProcessRunner((_, _) => Task.FromResult(Result(0)));
-        var probe = new HardwareEncoderProbe(processRunner, new FakeFfmpegToolLocator());
+        var probe = new HardwareEncoderProbe(processRunner, new FakeFfmpegToolLocator(), Governor);
         using var cts = new CancellationTokenSource();
         await cts.CancelAsync();
 
@@ -169,7 +172,7 @@ public class HardwareEncoderProbeTests
 
             return Task.FromResult(Result(0));
         });
-        var probe = new HardwareEncoderProbe(processRunner, new FakeFfmpegToolLocator());
+        var probe = new HardwareEncoderProbe(processRunner, new FakeFfmpegToolLocator(), Governor);
 
         await probe.SelectEncoderAsync(CancellationToken.None);
 
@@ -193,7 +196,7 @@ public class HardwareEncoderProbeTests
             // libx264 is absent (build compiled --disable-libx264); libopenh264 works.
             return Task.FromResult(Result(encoder == "libopenh264" ? 0 : 1));
         });
-        var probe = new HardwareEncoderProbe(processRunner, new FakeFfmpegToolLocator());
+        var probe = new HardwareEncoderProbe(processRunner, new FakeFfmpegToolLocator(), Governor);
 
         var selection = await probe.SelectSoftwareEncoderAsync(CancellationToken.None);
 
@@ -208,7 +211,7 @@ public class HardwareEncoderProbeTests
     public async Task SelectSoftwareEncoderAsync_NoSoftwareEncoderWorks_Throws()
     {
         var processRunner = new FakeProcessRunner((_, _) => Task.FromResult(Result(1)));
-        var probe = new HardwareEncoderProbe(processRunner, new FakeFfmpegToolLocator());
+        var probe = new HardwareEncoderProbe(processRunner, new FakeFfmpegToolLocator(), Governor);
 
         await Assert.ThrowsAsync<RenderExecutionException>(() => probe.SelectSoftwareEncoderAsync(CancellationToken.None));
     }
@@ -221,7 +224,7 @@ public class HardwareEncoderProbeTests
             var encoder = EncoderNameFromRequest(request);
             return Task.FromResult(Result(encoder is "h264_nvenc" or "libx264" ? 0 : 1));
         });
-        var probe = new HardwareEncoderProbe(processRunner, new FakeFfmpegToolLocator());
+        var probe = new HardwareEncoderProbe(processRunner, new FakeFfmpegToolLocator(), Governor);
 
         var hardware = await probe.SelectEncoderAsync(CancellationToken.None);
         var software = await probe.SelectSoftwareEncoderAsync(CancellationToken.None);
